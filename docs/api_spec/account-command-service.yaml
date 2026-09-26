@@ -1,0 +1,280 @@
+openapi: 3.0.3
+info:
+  title: Account Command Service API
+  version: 1.0.0
+  description: |
+    Handles commands (deposits, withdrawals, transfers) as write operations.
+    All endpoints validate business rules and append events to the event store.
+
+servers:
+  - url: http://localhost:8081/api
+    description: Local development
+
+paths:
+  /accounts:
+    post:
+      summary: Open a new bank account
+      operationId: openAccount
+      tags:
+        - Accounts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAccountRequest'
+      responses:
+        '201':
+          description: Account opened successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAccountResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{accountId}/deposit:
+    post:
+      summary: Deposit money into an account
+      operationId: deposit
+      tags:
+        - Transactions
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepositRequest'
+      responses:
+        '200':
+          description: Deposit processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositResponse'
+        '400':
+          description: Invalid amount
+        '404':
+          description: Account not found
+        '409':
+          description: Account closed
+
+  /accounts/{accountId}/withdraw:
+    post:
+      summary: Withdraw money from an account
+      operationId: withdraw
+      tags:
+        - Transactions
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawRequest'
+      responses:
+        '200':
+          description: Withdrawal processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawResponse'
+        '400':
+          description: Invalid amount
+        '404':
+          description: Account not found
+        '409':
+          description: Account closed or insufficient funds
+
+  /accounts/transfer:
+    post:
+      summary: Initiate a funds transfer between accounts
+      operationId: initiateTransfer
+      tags:
+        - Transfers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '200':
+          description: Transfer initiated (asynchronous completion)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferInitiatedResponse'
+        '400':
+          description: Invalid request (same accounts, missing fields)
+        '404':
+          description: One or both accounts not found
+        '409':
+          description: Source account closed
+
+components:
+  schemas:
+    OpenAccountRequest:
+      type: object
+      required:
+        - accountHolderName
+        - email
+      properties:
+        accountHolderName:
+          type: string
+          format: email
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        initialDeposit:
+          type: number
+          format: decimal
+          minimum: 0
+          default: 0
+        currency:
+          type: string
+          default: USD
+          enum: [USD, EUR, GBP, JPY]
+
+    OpenAccountResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [OPEN]
+        openedAt:
+          type: string
+          format: date-time
+
+    DepositRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+        reference:
+          type: string
+          maxLength: 100
+        currency:
+          type: string
+          default: USD
+
+    DepositResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        balanceAfter:
+          type: number
+          format: decimal
+        currency:
+          type: string
+
+    WithdrawRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+        reference:
+          type: string
+          maxLength: 100
+
+    WithdrawResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        balanceAfter:
+          type: number
+          format: decimal
+
+    TransferRequest:
+      type: object
+      required:
+        - sourceAccountId
+        - destinationAccountId
+        - amount
+      properties:
+        sourceAccountId:
+          type: string
+          format: uuid
+        destinationAccountId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+        currency:
+          type: string
+          default: USD
+        description:
+          type: string
+          maxLength: 500
+
+    TransferInitiatedResponse:
+      type: object
+      properties:
+        transferId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [INITIATED]
+        initiatedAt:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time

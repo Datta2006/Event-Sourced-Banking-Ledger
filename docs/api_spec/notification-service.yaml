@@ -1,0 +1,135 @@
+openapi: 3.0.3
+info:
+  title: Notification Service API
+  version: 1.0.0
+  description: |
+    Consumes events/alerts from Kafka and sends notifications
+    to customers via email (MailHog in dev), webhook, or in-app log.
+
+servers:
+  - url: http://localhost:8084/api
+    description: Local development
+
+paths:
+  /notifications/history:
+    get:
+      summary: Get notification history for an account
+      operationId: listNotifications
+      tags:
+        - Notifications
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Notification history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NotificationEntry'
+                  total:
+                    type: integer
+
+  /notifications/{notificationId}:
+    get:
+      summary: Get notification delivery status
+      operationId: getNotificationStatus
+      tags:
+        - Notifications
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notification status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationEntry'
+        '404':
+          description: Notification not found
+
+  /notifications/test:
+    post:
+      summary: Send a test notification (dev only)
+      operationId: sendTestNotification
+      tags:
+        - Notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestNotificationRequest'
+      responses:
+        '200':
+          description: Test notification queued
+        '400':
+          description: Invalid request
+
+components:
+  schemas:
+    NotificationEntry:
+      type: object
+      properties:
+        notificationId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [EMAIL, WEBHOOK, IN_APP]
+        subject:
+          type: string
+        body:
+          type: string
+        sentAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [SENT, FAILED]
+
+    TestNotificationRequest:
+      type: object
+      required:
+        - accountId
+        - subject
+        - body
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [EMAIL, WEBHOOK, IN_APP]
+          default: EMAIL
+        subject:
+          type: string
+        body:
+          type: string

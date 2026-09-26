@@ -1,0 +1,200 @@
+openapi: 3.0.3
+info:
+  title: Fraud Detection Service API
+  version: 1.0.0
+  description: |
+    Subscribes to the live event stream, applies rules/heuristics,
+    and exposes fraud alerts and rule configuration.
+
+servers:
+  - url: http://localhost:8083/api
+    description: Local development
+
+paths:
+  /fraud/alerts:
+    get:
+      summary: List all active fraud alerts
+      operationId: listAlerts
+      tags:
+        - Alerts
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of fraud alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FraudAlert'
+                  total:
+                    type: integer
+
+  /fraud/alerts/{alertId}:
+    get:
+      summary: Get a specific fraud alert
+      operationId: getAlert
+      tags:
+        - Alerts
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Fraud alert details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FraudAlert'
+        '404':
+          description: Alert not found
+
+  /fraud/alerts/{alertId}/clear:
+    post:
+      summary: Clear a fraud flag
+      operationId: clearAlert
+      tags:
+        - Alerts
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Alert cleared
+        '404':
+          description: Alert not found
+
+  /fraud/rules:
+    get:
+      summary: List active fraud detection rules
+      operationId: listRules
+      tags:
+        - Rules
+      responses:
+        '200':
+          description: List of active rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FraudRule'
+
+  /fraud/rules:
+    post:
+      summary: Create or update a fraud rule (admin)
+      operationId: createRule
+      tags:
+        - Rules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FraudRuleInput'
+      responses:
+        '201':
+          description: Rule created
+        '400':
+          description: Invalid rule configuration
+
+components:
+  schemas:
+    FraudAlert:
+      type: object
+      properties:
+        flagId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        transferId:
+          type: string
+          format: uuid
+        severity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        rule:
+          type: string
+        description:
+          type: string
+        raisedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ACTIVE, CLEARED]
+
+    FraudRule:
+      type: object
+      properties:
+        ruleId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        severity:
+          type: string
+        enabled:
+          type: boolean
+        threshold:
+          type: number
+        timeWindowMinutes:
+          type: integer
+
+    FraudRuleInput:
+      type: object
+      required:
+        - name
+        - severity
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        severity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        threshold:
+          type: number
+        timeWindowMinutes:
+          type: integer
+        enabled:
+          type: boolean
+          default: true

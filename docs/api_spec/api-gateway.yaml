@@ -1,0 +1,492 @@
+openapi: 3.0.3
+info:
+  title: API Gateway
+  version: 1.0.0
+  description: |
+    Single entry point for all client requests.
+    Routes to downstream services based on path prefix.
+    Provides authentication pass-through and request aggregation.
+
+servers:
+  - url: http://localhost:8080/api
+    description: Local development
+
+paths:
+  /accounts:
+    get:
+      summary: List all accounts (aggregated from Ledger Query)
+      operationId: listAccounts
+      tags:
+        - Accounts
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccountSummary'
+    post:
+      summary: Open a new account (routed to Account Command)
+      operationId: openAccount
+      tags:
+        - Accounts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAccountRequest'
+      responses:
+        '201':
+          description: Account opened
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAccountResponse'
+
+  /accounts/{accountId}/balance:
+    get:
+      summary: Get account balance (routed to Ledger Query)
+      operationId: getBalance
+      tags:
+        - Balances
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+
+  /accounts/{accountId}/statements:
+    get:
+      summary: Get transaction history (routed to Ledger Query)
+      operationId: getStatements
+      tags:
+        - Statements
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Paginated statements
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatementsResponse'
+
+  /accounts/{accountId}/deposit:
+    post:
+      summary: Deposit money (routed to Account Command)
+      operationId: deposit
+      tags:
+        - Transactions
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepositRequest'
+      responses:
+        '200':
+          description: Deposit processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositResponse'
+
+  /accounts/{accountId}/withdraw:
+    post:
+      summary: Withdraw money (routed to Account Command)
+      operationId: withdraw
+      tags:
+        - Transactions
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawRequest'
+      responses:
+        '200':
+          description: Withdrawal processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawResponse'
+
+  /accounts/transfer:
+    post:
+      summary: Transfer funds (routed to Account Command)
+      operationId: transfer
+      tags:
+        - Transfers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '200':
+          description: Transfer initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferInitiatedResponse'
+
+  /fraud/alerts:
+    get:
+      summary: List fraud alerts (routed to Fraud Detection)
+      operationId: listFraudAlerts
+      tags:
+        - Fraud
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of fraud alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FraudAlert'
+
+  /notifications/history:
+    get:
+      summary: Get notification history (routed to Notification)
+      operationId: listNotifications
+      tags:
+        - Notifications
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notification history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NotificationEntry'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    AccountSummary:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        accountHolderName:
+          type: string
+        balance:
+          type: number
+          format: decimal
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, CLOSED]
+
+    OpenAccountRequest:
+      type: object
+      required:
+        - accountHolderName
+        - email
+      properties:
+        accountHolderName:
+          type: string
+        email:
+          type: string
+          format: email
+        initialDeposit:
+          type: number
+          format: decimal
+          default: 0
+        currency:
+          type: string
+          default: USD
+
+    OpenAccountResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        openedAt:
+          type: string
+          format: date-time
+
+    BalanceResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        balance:
+          type: number
+          format: decimal
+        currency:
+          type: string
+        lastUpdated:
+          type: string
+          format: date-time
+
+    StatementsResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+        statements:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatementEntry'
+
+    StatementEntry:
+      type: object
+      properties:
+        eventType:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        balanceAfter:
+          type: number
+          format: decimal
+        occurredAt:
+          type: string
+          format: date-time
+        reference:
+          type: string
+
+    DepositRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+        reference:
+          type: string
+        currency:
+          type: string
+          default: USD
+
+    DepositResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        balanceAfter:
+          type: number
+          format: decimal
+        currency:
+          type: string
+
+    WithdrawRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+        reference:
+          type: string
+
+    WithdrawResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        balanceAfter:
+          type: number
+          format: decimal
+
+    TransferRequest:
+      type: object
+      required:
+        - sourceAccountId
+        - destinationAccountId
+        - amount
+      properties:
+        sourceAccountId:
+          type: string
+          format: uuid
+        destinationAccountId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+        currency:
+          type: string
+          default: USD
+        description:
+          type: string
+
+    TransferInitiatedResponse:
+      type: object
+      properties:
+        transferId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        initiatedAt:
+          type: string
+          format: date-time
+
+    FraudAlert:
+      type: object
+      properties:
+        flagId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        transferId:
+          type: string
+          format: uuid
+        severity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        rule:
+          type: string
+        description:
+          type: string
+        raisedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ACTIVE, CLEARED]
+
+    NotificationEntry:
+      type: object
+      properties:
+        notificationId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [EMAIL, WEBHOOK, IN_APP]
+        subject:
+          type: string
+        body:
+          type: string
+        sentAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [SENT, FAILED]

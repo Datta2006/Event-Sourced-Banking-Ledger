@@ -1,0 +1,247 @@
+openapi: 3.0.3
+info:
+  title: Ledger Query Service API
+  version: 1.0.0
+  description: |
+    Provides read-optimized queries over denormalised MongoDB models.
+    All endpoints are synchronous for fast frontend consumption.
+
+servers:
+  - url: http://localhost:8082/api
+    description: Local development
+
+paths:
+  /ledger/accounts/{accountId}/balance:
+    get:
+      summary: Get current balance for an account
+      operationId: getBalance
+      tags:
+        - Balances
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '404':
+          description: Account not found
+
+  /ledger/accounts/{accountId}/statements:
+    get:
+      summary: Get paginated transaction history for an account
+      operationId: getStatements
+      tags:
+        - Statements
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [DEPOSIT, WITHDRAWAL, TRANSFER_IN, TRANSFER_OUT]
+      responses:
+        '200':
+          description: Paginated statements
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatementsResponse'
+        '404':
+          description: Account not found
+
+  /ledger/accounts/{accountId}/transactions:
+    get:
+      summary: Get all transactions across an account (paginated)
+      operationId: getTransactions
+      tags:
+        - Transactions
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: All transactions for account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionsResponse'
+
+  /ledger/accounts:
+    get:
+      summary: List all accounts (for admin/audit views)
+      operationId: listAccounts
+      tags:
+        - Accounts
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccountSummary'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  size:
+                    type: integer
+
+components:
+  schemas:
+    BalanceResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        balance:
+          type: number
+          format: decimal
+        currency:
+          type: string
+        lastUpdated:
+          type: string
+          format: date-time
+
+    StatementsResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+        statements:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatementEntry'
+
+    StatementEntry:
+      type: object
+      properties:
+        eventType:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        balanceAfter:
+          type: number
+          format: decimal
+        occurredAt:
+          type: string
+          format: date-time
+        reference:
+          type: string
+
+    TransactionsResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionEntry'
+        totalElements:
+          type: integer
+
+    TransactionEntry:
+      type: object
+      properties:
+        eventType:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        counterpartyAccountId:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+
+    AccountSummary:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        accountHolderName:
+          type: string
+        balance:
+          type: number
+          format: decimal
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, CLOSED]

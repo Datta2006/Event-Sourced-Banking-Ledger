@@ -1,0 +1,197 @@
+version: "3.9"
+
+services:
+  # --- Service Discovery ---
+  eureka-server:
+    image: ddbs-eureka-server:0.1.0
+    build:
+      context: .
+      dockerfile: infra/eureka/Dockerfile
+    ports:
+      - "8761:8761"
+    environment:
+      - EUREKA_CLIENT_REGISTER_WITH_EURECCA=false
+      - EUREKA_CLIENT_FETCH_REGISTRY=false
+    networks:
+      - ddbs-network
+
+  # --- Centralized Config ---
+  config-server:
+    image: ddbs-config-server:0.1.0
+    build:
+      context: .
+      dockerfile: infra/config/Dockerfile
+    ports:
+      - "8888:8888"
+    environment:
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=file:///tmp/ddbs-config-repo
+    volumes:
+      - ./infra/config-repo:/tmp/ddbs-config-repo
+    networks:
+      - ddbs-network
+    depends_on:
+      - eureka-server
+
+  # --- API Gateway ---
+  api-gateway:
+    image: ddbs-api-gateway:0.1.0
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_CLOUD_GATEWAY_DISCOVERY_LOCATOR_ENABLED=true
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+    networks:
+      - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+
+  # --- Account Command Service ---
+  account-command-service:
+    image: ddbs-account-command:0.1.0
+    build:
+      context: ./account-command-service
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ddbs
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+    networks:
+      - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+      - postgres
+      - kafka
+
+  # --- Ledger Query Service ---
+  ledger-query-service:
+    image: ddbs-ledger-query:0.1.0
+    build:
+      context: ./ledger-query-service
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_DATA_MONGODB_URI=mongodb://mongo:27017/ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+    networks:
+      - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+      - mongo
+      - kafka
+
+  # --- Fraud Detection Service ---
+  fraud-detection-service:
+    image: ddbs-fraud-detection:0.1.0
+    build:
+      context: ./fraud-detection-service
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+    networks:
+      - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+      - kafka
+
+  # --- Notification Service ---
+  notification-service:
+    image: ddbs-notification:0.1.0
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+    networks:
+      - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+      - kafka
+
+  # --- PostgreSQL (Event Store + relational data) ---
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ddbs
+      POSTGRES_USER: ddbs
+      POSTGRES_PASSWORD: ddbs
+    volumes:
+      - ddbs-postgres-data:/var/lib/postgresql/data
+    networks:
+      - ddbs-network
+
+  # --- MongoDB (Read-model store) ---
+  mongo:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: ddbs
+    volumes:
+      - ddbs-mongo-data:/data/db
+    networks:
+      - ddbs-network
+
+  # --- Kafka (message broker) ---
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - ddbs-network
+    depends_on:
+      - zookeeper
+
+  # --- Zookeeper (Kafka coordination; KRaft mode can replace in future) ---
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - ddbs-network
+
+  # --- MailHog (fake SMTP for dev/notifications demo) ---
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - ddbs-network
+
+volumes:
+  ddbs-postgres-data:
+  ddbs-mongo-data:
+
+networks:
+  ddbs-network:
+    driver: bridge

@@ -1,8 +1,9 @@
-import { api } from '../api/client';
-import { mockApi } from '../mock/server';
-import { Section, StatusBadge, ErrorNote } from '../components/ui';
-import { ago } from '../lib/format';
-import { usePoll } from '../lib/poll';
+import { Section, StatusBadge, ErrorNote } from '../../components/ui';
+import { ago } from '../../lib/format';
+import { usePoll } from '../../lib/poll';
+import { api } from '../../api/client';
+import { mockApi } from '../../mock/server';
+import { PageHeader } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
 
@@ -37,14 +38,11 @@ export function SystemOps() {
 
   return (
     <>
-      <header>
-        <div className="eyebrow">Infrastructure · ARCHITECTURE.md §1</div>
-        <h1 className="page-title">System ops</h1>
-        <p className="page-sub">
-          Eureka registry, region-sharded ledger (ShardingSphere-JDBC), and Kafka consumer lag: the
-          plumbing the event stream depends on.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Infrastructure · ARCHITECTURE.md §1"
+        title="System ops"
+        sub="Eureka registry, region-sharded ledger (ShardingSphere-JDBC), and Kafka consumer lag: the plumbing the event stream depends on."
+      />
 
       <Section
         title="Service registry"

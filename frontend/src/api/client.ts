@@ -13,11 +13,14 @@ import type {
   LoanQueueView,
   LoanRequestView,
   NotificationView,
+  PoolReplenishmentView,
+  ReservationStatus,
   ReservationView,
   ServiceInstanceView,
   ShardView,
   TransactionView,
   TransferStatusView,
+  TrustScoreChangeView,
   TrustScoreView,
 } from './contract';
 
@@ -53,17 +56,23 @@ async function request<T>(
   return (await res.json().catch(() => undefined)) as T;
 }
 
+/** Build a querystring from defined params only. */
+function qs(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) search.set(k, String(v));
+  }
+  const s = search.toString();
+  return s ? `?${s}` : '';
+}
+
 export const api = {
   // ledger-query (read model)
   listAccounts: () => request<AccountSummary[]>('/api/accounts'),
   listRecentEvents: (since?: string, limit = 50) =>
-    request<EventView[]>(
-      `/api/events?limit=${limit}${since ? `&since=${encodeURIComponent(since)}` : ''}`,
-    ),
+    request<EventView[]>(`/api/events${qs({ limit, since })}`),
   listTransactions: (accountId?: string, page = 0, size = 50) =>
-    request<TransactionView[]>(
-      `/api/transactions?page=${page}&size=${size}${accountId ? `&accountId=${accountId}` : ''}`,
-    ),
+    request<TransactionView[]>(`/api/transactions${qs({ accountId, page, size })}`),
   listAccountEvents: (accountId: string) =>
     request<EventView[]>(`/api/accounts/${accountId}/events`),
 
@@ -83,6 +92,13 @@ export const api = {
       method: 'POST',
       json: { amount },
     }),
+  closeAccount: (accountId: string) =>
+    request<AccountSnapshot>(`/api/accounts/${accountId}/close`, { method: 'POST' }),
+  setKycStatus: (accountId: string, kycStatus: 'PENDING' | 'VERIFIED' | 'REJECTED', note?: string) =>
+    request<AccountSnapshot>(`/api/accounts/${accountId}/kyc`, {
+      method: 'POST',
+      json: { kycStatus, note },
+    }),
   transfer: (body: {
     fromAccountId: string;
     toAccountId: string;
@@ -98,13 +114,34 @@ export const api = {
   // loan-service
   getLoanQueue: () => request<LoanQueueView>('/api/loans/queue'),
   getAdminPool: () => request<AdminPoolView>('/api/loans/pool'),
-  requestLoan: (accountId: string, amount: number) =>
+  requestLoan: (accountId: string, amount: number, purpose?: string) =>
     request<LoanRequestView>('/api/loans', {
       method: 'POST',
-      json: { accountId, amount },
+      json: { accountId, amount, purpose },
     }),
+  listLoans: (accountId?: string, status?: LoanRequestView['status']) =>
+    request<LoanRequestView[]>(`/api/loans${qs({ accountId, status })}`),
+  decideLoan: (loanId: string, decision: 'APPROVE' | 'REJECT', note?: string) =>
+    request<LoanRequestView>(`/api/loans/${loanId}/decision`, {
+      method: 'POST',
+      json: { decision, note },
+    }),
+  repayLoan: (loanId: string, amount: number) =>
+    request<LoanRequestView>(`/api/loans/${loanId}/repayment`, {
+      method: 'POST',
+      json: { amount },
+    }),
+  replenishPool: (amount: number) =>
+    request<AdminPoolView>('/api/loans/pool/replenish', {
+      method: 'POST',
+      json: { amount },
+    }),
+  listPoolHistory: () =>
+    request<PoolReplenishmentView[]>('/api/loans/pool/history'),
 
   // payment-reservation
+  listReservations: (accountId?: string, status?: ReservationStatus) =>
+    request<ReservationView[]>(`/api/reservations${qs({ accountId, status })}`),
   createReservation: (accountId: string, amount: number, ttlMinutes = 30) =>
     request<ReservationView>('/api/reservations', {
       method: 'POST',
@@ -121,17 +158,27 @@ export const api = {
       method: 'POST',
       json: { offlineToken, merchantAccountId },
     }),
+  voidReservation: (reservationId: string) =>
+    request<ReservationView>(`/api/reservations/${reservationId}/void`, {
+      method: 'POST',
+    }),
 
   // trust-score
   getTrustScore: (accountId: string) =>
     request<TrustScoreView>(`/api/trust-score/${accountId}`),
+  listTrustScoreChanges: (accountId?: string, limit = 50) =>
+    request<TrustScoreChangeView[]>(`/api/trust-score/changes${qs({ accountId, limit })}`),
 
   // fraud / notifications
-  listFraudCases: () => request<FraudCase[]>('/api/fraud/cases'),
-  listNotifications: (accountId?: string) =>
-    request<NotificationView[]>(
-      `/api/notifications${accountId ? `?accountId=${accountId}` : ''}`,
-    ),
+  listFraudCases: (accountId?: string, status?: FraudCase['status']) =>
+    request<FraudCase[]>(`/api/fraud/cases${qs({ accountId, status })}`),
+  reviewFraudCase: (caseId: string, status: 'REVIEWED' | 'DISMISSED', note?: string) =>
+    request<FraudCase>(`/api/fraud/cases/${caseId}/review`, {
+      method: 'POST',
+      json: { status, note },
+    }),
+  listNotifications: (accountId?: string, causeEvent?: string) =>
+    request<NotificationView[]>(`/api/notifications${qs({ accountId, causeEvent })}`),
 
   // system-ops
   listServiceInstances: () =>

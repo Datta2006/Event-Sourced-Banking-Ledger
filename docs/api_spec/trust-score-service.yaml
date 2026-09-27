@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Trust Score Service API
-  version: 0.2.0
+  version: 0.3.0
   description: >
     v2 §3.6 — consumes account.events and loan.events and maintains a running
     0–100 trust score per account. Publishes TrustScoreChanged on every change;
@@ -28,6 +28,34 @@ paths:
                 $ref: '#/components/schemas/TrustScoreView'
         '404':
           description: Account has no trust score yet
+  /api/trust-score/changes:
+    get:
+      summary: Cross-customer feed of TrustScoreChanged
+      description: >
+        Audit view over the TrustScoreChanged events the service has published —
+        why a tier moved (deposit, repayment, default). Bank-facing; newest first.
+      operationId: listTrustScoreChanges
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: Change feed, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrustScoreChangeView'
 components:
   schemas:
     TrustScoreView:
@@ -46,5 +74,36 @@ components:
           maximum: 3
           description: 0=Low (0–40), 1=Medium (41–70), 2=High (71–90), 3=Excellent (91–100)
         lastChangedAt:
+          type: string
+          format: date-time
+    TrustScoreChangeView:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        scoreBefore:
+          type: integer
+          minimum: 0
+          maximum: 100
+        scoreAfter:
+          type: integer
+          minimum: 0
+          maximum: 100
+        tierBefore:
+          type: integer
+          minimum: 0
+          maximum: 3
+        tierAfter:
+          type: integer
+          minimum: 0
+          maximum: 3
+        reason:
+          type: string
+          description: e.g. DEPOSIT, LOAN_REPAYMENT, LOAN_DEFAULT, PERIODIC_REVIEW
+        changedAt:
           type: string
           format: date-time

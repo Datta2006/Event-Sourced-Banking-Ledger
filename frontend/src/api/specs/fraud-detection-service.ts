@@ -38,6 +38,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/fraud/cases/{caseId}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review or dismiss a flagged case (bank action)
+         * @description Bank-side decision on an OPEN case. REVIEWED marks it actioned; DISMISSED marks it a false positive. Both append FraudCaseReviewed and notify the customer when the flag is cleared.
+         */
+        post: operations["reviewFraudCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -49,16 +69,24 @@ export interface components {
             accountId?: string;
             /** @description Fraud rule that fired (carried over from v1 rules) */
             rule?: string;
+            /** @description Severity of the flag at trigger time */
+            riskScore?: number;
             /** @description Event type from account.events / payment.events that triggered the case */
             triggeredByEvent?: string;
             /** @enum {string} */
             status?: "OPEN" | "REVIEWED" | "DISMISSED";
             /** Format: date-time */
             flaggedAt?: string;
+            /** Format: date-time */
+            reviewedAt?: string | null;
         };
     };
     responses: never;
-    parameters: never;
+    parameters: {
+        CaseId: string;
+        /** @description Client-supplied idempotency key persisted in processed_requests for 24h. */
+        IdempotencyKey: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
@@ -110,6 +138,53 @@ export interface operations {
             };
             /** @description Case not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviewFraudCase: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                caseId: components["parameters"]["CaseId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    status: "REVIEWED" | "DISMISSED";
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated case */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FraudCase"];
+                };
+            };
+            /** @description Case not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Case not OPEN */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

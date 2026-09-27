@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { api } from '../api/client';
-import { mockApi } from '../mock/server';
-import type { ReservationView } from '../api/contract';
-import { Section, StatusBadge, ErrorNote } from '../components/ui';
-import { moneyINR, time } from '../lib/format';
-import { usePoll } from '../lib/poll';
+import type { ReservationView } from '../../api/contract';
+import { Section, StatusBadge, ErrorNote } from '../../components/ui';
+import { moneyINR, time, ago } from '../../lib/format';
+import { usePoll } from '../../lib/poll';
+import { api } from '../../api/client';
+import { mockApi } from '../../mock/server';
+import { PageHeader, NoAccount, useMe } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
 
@@ -60,9 +61,9 @@ function TokenCard({ reservation }: { reservation: ReservationView }) {
   );
 }
 
-export function OfflinePayment() {
+export function OfflinePayment({ accountId }: { accountId: string }) {
+  const { data: me } = useMe(accountId);
   const { data: accounts } = usePoll(() => live().listAccounts(), 5000);
-  const [accountId, setAccountId] = useState('');
   const [amount, setAmount] = useState('1200.00');
   const [ttl, setTtl] = useState('30');
   const [reservation, setReservation] = useState<ReservationView | null>(null);
@@ -77,6 +78,9 @@ export function OfflinePayment() {
   );
   const current = fresh ?? reservation;
 
+  // customer's own reservation history
+  const { data: mine } = usePoll(() => live().listReservations(accountId), 4000);
+
   const reserve = async () => {
     setErr(undefined);
     setCaptureMsg(undefined);
@@ -90,7 +94,7 @@ export function OfflinePayment() {
 
   const capture = async () => {
     if (!current) return;
-    const merchant = accounts?.find((a) => a.accountId !== current.accountId);
+    const merchant = accounts?.find((a) => a.accountId !== current.accountId && a.status === 'ACTIVE');
     try {
       await live().captureReservation(current.reservationId, current.offlineToken ?? '', merchant?.accountId ?? current.accountId);
       setCaptureMsg('FundsCaptured. Hold converted to a real debit, merchant credited.');
@@ -104,14 +108,12 @@ export function OfflinePayment() {
 
   return (
     <>
-      <header>
-        <div className="eyebrow">Payment &amp; Reservation · v2 §4</div>
-        <h1 className="page-title">Offline payment</h1>
-        <p className="page-sub">
-          Pessimistic pre-commit: FundsReserved moves available → reserved, a signed token is minted, and the
-          first capture by reservationId wins. Uninvoked holds expire via FundsReleased.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Customer portal · v2 §4"
+        title="Offline payment"
+        sub="Pessimistic pre-commit: FundsReserved moves available → reserved, a signed token is minted, and the first capture by reservationId wins. Uninvoked holds expire via FundsReleased."
+      />
+      {!me && <NoAccount accountId={accountId} />}
 
       <div className="grid-2" style={{ marginTop: 'var(--sp-xl)' }}>
         <section className="panel">
@@ -121,15 +123,10 @@ export function OfflinePayment() {
           </div>
           <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-lg)' }}>
             <div className="field">
-              <label htmlFor="acct">Account</label>
-              <select id="acct" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-                <option value="">Select…</option>
-                {accounts?.map((a) => (
-                  <option key={a.accountId} value={a.accountId}>
-                    {a.holderName} · available {moneyINR(a.availableBalance)}
-                  </option>
-                ))}
-              </select>
+              <label htmlFor="from-acct">From</label>
+              <div className="mono" style={{ fontSize: 13, padding: '8px 0' }}>
+                {me ? `${me.holderName} · available ${moneyINR(me.availableBalance)} · reserved ${moneyINR(me.reservedBalance)}` : '…'}
+              </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-md)' }}>
               <div className="field">
@@ -141,7 +138,7 @@ export function OfflinePayment() {
                 <input id="ttl" value={ttl} onChange={(e) => setTtl(e.target.value)} inputMode="numeric" />
               </div>
             </div>
-            <button className="btn btn-primary" onClick={reserve} disabled={!accountId}>
+            <button className="btn btn-primary" onClick={reserve} disabled={!me}>
               Reserve &amp; mint token
             </button>
             <ErrorNote error={err} />
@@ -189,15 +186,23 @@ export function OfflinePayment() {
         </section>
       </div>
 
-      <Section title="Why this flow" note="v2 §4.2 · the inverse design choice: it cannot wait for coordination, so it reserves before the risk window">
+      <Section title="Your reservations" note="GET /api/reservations?accountId=… · holds on this account only">
         <table className="register">
           <thead>
-            <tr><th>Step</th><th>Event</th><th>Effect</th></tr>
+            <tr><th>Reservation</th><th className="num">Amount</th><th>Status</th><th>Expires</th></tr>
           </thead>
           <tbody>
-            <tr><td>1</td><td className="mono">FundsReserved</td><td>available_balance → reserved_balance; token minted</td></tr>
-            <tr><td>2</td><td className="mono">FundsCaptured</td><td>first capture wins; hold becomes a real debit</td></tr>
-            <tr><td>3</td><td className="mono">FundsReleased</td><td>expiry job returns uninvoked holds to available</td></tr>
+            {mine?.map((r) => (
+              <tr key={r.reservationId}>
+                <td className="mono">{r.reservationId.slice(0, 8)}…</td>
+                <td className="num">{moneyINR(r.amount)}</td>
+                <td><StatusBadge status={r.status} /></td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>{ago(r.expiresAt)}</td>
+              </tr>
+            ))}
+            {mine && mine.length === 0 && (
+              <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>No reservations yet.</td></tr>
+            )}
           </tbody>
         </table>
       </Section>

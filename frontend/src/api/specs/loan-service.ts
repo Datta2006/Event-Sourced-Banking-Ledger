@@ -11,7 +11,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List loan requests
+         * @description Loan request history. Scope with accountId for the customer's "My loans" view; unscoped for the bank's cross-customer list. Newest first.
+         */
+        get: operations["listLoans"];
         put?: never;
         /**
          * Request a loan
@@ -64,6 +68,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/loans/pool/replenish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replenish the admin pool
+         * @description Credits admin_pool:balance and appends AdminPoolReplenished; consumers re-queue WAITING_FOR_FUNDS loans so they clear on the next worker pass.
+         */
+        post: operations["replenishPool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/loans/pool/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Replenishment history
+         * @description Audit trail of AdminPoolReplenished events, newest first.
+         */
+        get: operations["listPoolHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/loans/{loanId}": {
         parameters: {
             query?: never;
@@ -81,6 +125,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/loans/{loanId}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or reject a queued loan (bank override)
+         * @description Manual override of the priority queue. APPROVE runs the same atomic Lua pop-and-debit as the worker (409 if the pool cannot cover it); REJECT appends LoanRejected. Only QUEUED / WAITING_FOR_FUNDS loans are decidable.
+         */
+        post: operations["decideLoan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/loans/{loanId}/repayment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Repay a disbursed loan
+         * @description Customer repayment of a DISBURSED loan: debits the account, appends LoanRepaid, and publishes TrustScoreChanged (repayments raise the score).
+         */
+        post: operations["repayLoan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -92,10 +176,11 @@ export interface components {
             accountId?: string;
             /** Format: double */
             amount?: number;
+            purpose?: string | null;
             /** @description 0=Low, 1=Medium, 2=High, 3=Excellent — snapshotted at request time */
             trustTier?: number;
             /** @enum {string} */
-            status?: "QUEUED" | "WAITING_FOR_FUNDS" | "APPROVED" | "DISBURSED" | "REJECTED";
+            status?: "QUEUED" | "WAITING_FOR_FUNDS" | "APPROVED" | "DISBURSED" | "REJECTED" | "REPAID";
             /** Format: date-time */
             requestedAt?: string;
         };
@@ -113,7 +198,7 @@ export interface components {
             amount?: number;
             trustTier?: number;
             /** @enum {string} */
-            status?: "QUEUED" | "WAITING_FOR_FUNDS" | "APPROVED" | "DISBURSED" | "REJECTED";
+            status?: "QUEUED" | "WAITING_FOR_FUNDS" | "APPROVED" | "DISBURSED" | "REJECTED" | "REPAID";
             /** @description 1-based position in priority order (tier first, FCFS within tier) */
             position?: number;
             /** Format: date-time */
@@ -127,9 +212,23 @@ export interface components {
             /** Format: date-time */
             updatedAt?: string;
         };
+        PoolReplenishmentView: {
+            /**
+             * Format: uuid
+             * @description AdminPoolReplenished event id
+             */
+            eventId?: string;
+            /** Format: double */
+            amount?: number;
+            /** Format: double */
+            balanceAfter?: number;
+            /** Format: date-time */
+            at?: string;
+        };
     };
     responses: never;
     parameters: {
+        LoanId: string;
         /** @description Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6). */
         IdempotencyKey: string;
     };
@@ -139,6 +238,29 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listLoans: {
+        parameters: {
+            query?: {
+                accountId?: string;
+                status?: components["schemas"]["LoanRequestView"]["status"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Loan requests */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoanRequestView"][];
+                };
+            };
+        };
+    };
     requestLoan: {
         parameters: {
             query?: never;
@@ -156,6 +278,8 @@ export interface operations {
                     accountId: string;
                     /** Format: double */
                     amount: number;
+                    /** @description Free-text purpose shown to bank reviewers */
+                    purpose?: string;
                 };
             };
         };
@@ -218,6 +342,63 @@ export interface operations {
             };
         };
     };
+    replenishPool: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: double */
+                    amount: number;
+                };
+            };
+        };
+        responses: {
+            /** @description New pool balance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminPoolView"];
+                };
+            };
+            /** @description Invalid amount */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listPoolHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replenishment ledger */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoolReplenishmentView"][];
+                };
+            };
+        };
+    };
     getLoan: {
         parameters: {
             query?: never;
@@ -240,6 +421,99 @@ export interface operations {
             };
             /** @description Loan not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decideLoan: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                loanId: components["parameters"]["LoanId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "APPROVE" | "REJECT";
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Decision applied (LoanApproved or LoanRejected appended) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoanRequestView"];
+                };
+            };
+            /** @description Loan not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Loan not decidable (already decided/disbursed) or insufficient pool */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    repayLoan: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                loanId: components["parameters"]["LoanId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: double */
+                    amount: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Loan repaid (status REPAID) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoanRequestView"];
+                };
+            };
+            /** @description Loan not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Loan not in DISBURSED state */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

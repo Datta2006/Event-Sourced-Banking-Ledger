@@ -1,13 +1,14 @@
 openapi: 3.0.3
 info:
   title: Loan Service API
-  version: 0.3.0
+  version: 0.4.0
   description: >
     v2 §3 — loan requests are pushed onto the Valkey loan:queue priority queue
     (score = (3 - trustTier) * 10^9 + requestedAtEpochMillis: tier first, FCFS second).
     A worker pops the head and runs the atomic Lua pop-and-debit of admin_pool:balance;
     success → LoanApproved → LoanDisbursed, failure → WAITING_FOR_FUNDS until
-    AdminPoolReplenished.
+    AdminPoolReplenished. Bank staff can override the queue with an explicit
+    approve/reject decision; customers repay disbursed loans (LoanRepaid).
 paths:
   /api/loans:
     post:
@@ -33,6 +34,9 @@ paths:
                   type: number
                   format: double
                   minimum: 0.01
+                purpose:
+                  type: string
+                  description: Free-text purpose shown to bank reviewers
       responses:
         '202':
           description: Request queued (status QUEUED)
@@ -42,6 +46,31 @@ paths:
                 $ref: '#/components/schemas/LoanRequestView'
         '400':
           description: Invalid request
+    get:
+      summary: List loan requests
+      description: >
+        Loan request history. Scope with accountId for the customer's "My loans"
+        view; unscoped for the bank's cross-customer list. Newest first.
+      operationId: listLoans
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/LoanRequestView/properties/status'
+      responses:
+        '200':
+          description: Loan requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LoanRequestView'
   /api/loans/queue:
     get:
       summary: Current loan priority queue
@@ -69,6 +98,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminPoolView'
+  /api/loans/pool/replenish:
+    post:
+      summary: Replenish the admin pool
+      description: >
+        Credits admin_pool:balance and appends AdminPoolReplenished; consumers
+        re-queue WAITING_FOR_FUNDS loans so they clear on the next worker pass.
+      operationId: replenishPool
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: number
+                  format: double
+                  minimum: 0.01
+      responses:
+        '200':
+          description: New pool balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPoolView'
+        '400':
+          description: Invalid amount
+  /api/loans/pool/history:
+    get:
+      summary: Replenishment history
+      description: Audit trail of AdminPoolReplenished events, newest first.
+      operationId: listPoolHistory
+      responses:
+        '200':
+          description: Replenishment ledger
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PoolReplenishmentView'
   /api/loans/{loanId}:
     get:
       summary: Get loan status
@@ -89,8 +162,83 @@ paths:
                 $ref: '#/components/schemas/LoanRequestView'
         '404':
           description: Loan not found
+  /api/loans/{loanId}/decision:
+    post:
+      summary: Approve or reject a queued loan (bank override)
+      description: >
+        Manual override of the priority queue. APPROVE runs the same atomic Lua
+        pop-and-debit as the worker (409 if the pool cannot cover it); REJECT
+        appends LoanRejected. Only QUEUED / WAITING_FOR_FUNDS loans are decidable.
+      operationId: decideLoan
+      parameters:
+        - $ref: '#/components/parameters/LoanId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [APPROVE, REJECT]
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Decision applied (LoanApproved or LoanRejected appended)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoanRequestView'
+        '409':
+          description: Loan not decidable (already decided/disbursed) or insufficient pool
+        '404':
+          description: Loan not found
+  /api/loans/{loanId}/repayment:
+    post:
+      summary: Repay a disbursed loan
+      description: >
+        Customer repayment of a DISBURSED loan: debits the account, appends
+        LoanRepaid, and publishes TrustScoreChanged (repayments raise the score).
+      operationId: repayLoan
+      parameters:
+        - $ref: '#/components/parameters/LoanId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: number
+                  format: double
+                  minimum: 0.01
+      responses:
+        '200':
+          description: Loan repaid (status REPAID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoanRequestView'
+        '409':
+          description: Loan not in DISBURSED state
+        '404':
+          description: Loan not found
 components:
   parameters:
+    LoanId:
+      name: loanId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -112,6 +260,9 @@ components:
         amount:
           type: number
           format: double
+        purpose:
+          type: string
+          nullable: true
         trustTier:
           type: integer
           minimum: 0
@@ -119,7 +270,7 @@ components:
           description: 0=Low, 1=Medium, 2=High, 3=Excellent — snapshotted at request time
         status:
           type: string
-          enum: [QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED]
+          enum: [QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED, REPAID]
         requestedAt:
           type: string
           format: date-time
@@ -151,7 +302,7 @@ components:
           maximum: 3
         status:
           type: string
-          enum: [QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED]
+          enum: [QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED, REPAID]
         position:
           type: integer
           minimum: 1
@@ -169,5 +320,21 @@ components:
           type: string
           default: INR
         updatedAt:
+          type: string
+          format: date-time
+    PoolReplenishmentView:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: AdminPoolReplenished event id
+        amount:
+          type: number
+          format: double
+        balanceAfter:
+          type: number
+          format: double
+        at:
           type: string
           format: date-time

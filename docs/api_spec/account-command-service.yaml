@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Account Command Service API
-  version: 0.3.0
+  version: 0.4.0
   description: >
     Write side of account aggregates (v2 §2, §5, §6). Commands are validated,
     appended as events to the region-sharded ledger_events store (ShardingSphere-JDBC),
@@ -79,6 +79,57 @@ paths:
           description: WithdrawCommand accepted for ordered processing
         '400':
           description: Insufficient balance (rejected at apply time)
+  /api/accounts/{accountId}/close:
+    post:
+      summary: Close an account (bank action)
+      description: >
+        Bank-side lifecycle action. Rejected if reservedBalance > 0 (open holds
+        must be captured or released first). Appends AccountClosed; the read
+        model marks the account CLOSED and it disappears from customer lists.
+      operationId: closeAccount
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: AccountClosed appended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountSnapshot'
+        '409':
+          description: Account has open reservations or is already closed
+        '404':
+          description: Account not found
+  /api/accounts/{accountId}/kyc:
+    post:
+      summary: Update KYC status (bank action)
+      operationId: setKycStatus
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kycStatus]
+              properties:
+                kycStatus:
+                  type: string
+                  enum: [PENDING, VERIFIED, REJECTED]
+                note:
+                  type: string
+      responses:
+        '200':
+          description: KYC status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountSnapshot'
+        '404':
+          description: Account not found
   /api/transfers:
     post:
       summary: Transfer money between accounts
@@ -168,6 +219,13 @@ components:
         reservedBalance:
           type: number
           format: double
+        status:
+          type: string
+          enum: [ACTIVE, CLOSED]
+          description: Lifecycle status; CLOSED accounts are read-only
+        kycStatus:
+          type: string
+          enum: [PENDING, VERIFIED, REJECTED]
         openedAt:
           type: string
           format: date-time

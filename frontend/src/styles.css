@@ -154,6 +154,36 @@ a {
   animation: pulse 2.4s ease-in-out infinite;
 }
 
+/* ---- portal role switch ---- */
+.role-switch {
+  display: flex;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  margin-top: var(--sp-md);
+}
+
+.role-btn {
+  flex: 1;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 0;
+  cursor: pointer;
+  transition:
+    background var(--dur-micro) var(--ease-enter),
+    color var(--dur-micro) var(--ease-enter);
+}
+
+.role-btn.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
 /* reduced motion: collapse all loops/transitions to static (tasteskill §6.B) */
 @media (prefers-reduced-motion: reduce) {
   *,

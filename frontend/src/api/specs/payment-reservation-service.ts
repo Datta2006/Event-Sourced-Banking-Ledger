@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/reservations/{reservationId}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Void a reservation (bank action)
+         * @description Manually releases an active hold before TTL expiry: appends FundsReleased with reason MANUAL_VOID and returns the funds to available. 409 if the reservation is not RESERVED (already captured/expired/released).
+         */
+        post: operations["voidReservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/payments": {
         parameters: {
             query?: never;
@@ -31,7 +51,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List reservations
+         * @description All reservations newest-first. Scope with accountId (customer's own holds) or status (bank's reservations overview). Bank view includes every customer; a manually voided hold shows as RELEASED.
+         */
+        get: operations["listReservations"];
         put?: never;
         /**
          * Create an offline-payment reservation
@@ -104,6 +128,7 @@ export interface components {
     };
     responses: never;
     parameters: {
+        ReservationId: string;
         /** @description Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6). */
         IdempotencyKey: string;
     };
@@ -113,6 +138,45 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    voidReservation: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                reservationId: components["parameters"]["ReservationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Hold released */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReservationView"];
+                };
+            };
+            /** @description Reservation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Reservation not active */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     payOnline: {
         parameters: {
             query?: never;
@@ -149,6 +213,29 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listReservations: {
+        parameters: {
+            query?: {
+                accountId?: string;
+                status?: components["schemas"]["ReservationView"]["status"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reservations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReservationView"][];
+                };
             };
         };
     };

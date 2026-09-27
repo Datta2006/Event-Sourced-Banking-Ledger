@@ -35,6 +35,11 @@ export interface components {
             subject?: string;
             /** @description e.g. LoanApproved, FundsCaptured, TrustScoreChanged */
             causeEvent?: string;
+            /**
+             * @description SMTP delivery state; RETRYING/DEAD_LETTERED surface the DLQ state the bank log shows
+             * @enum {string}
+             */
+            deliveryStatus?: "SENT" | "RETRYING" | "DEAD_LETTERED";
             /** Format: date-time */
             sentAt?: string;
         };
@@ -51,6 +56,8 @@ export interface operations {
         parameters: {
             query?: {
                 accountId?: string;
+                /** @description Filter by originating event type, e.g. TrustScoreChanged. */
+                causeEvent?: string;
             };
             header?: never;
             path?: never;

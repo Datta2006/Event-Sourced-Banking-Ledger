@@ -122,6 +122,16 @@ export interface components {
             availableBalance?: number;
             /** Format: double */
             reservedBalance?: number;
+            /**
+             * @description Lifecycle state projected from AccountClosed events
+             * @enum {string}
+             */
+            status?: "ACTIVE" | "CLOSED";
+            /**
+             * @description Projected from AccountKycUpdated events
+             * @enum {string}
+             */
+            kycStatus?: "PENDING" | "VERIFIED" | "REJECTED";
             /** Format: date-time */
             updatedAt?: string;
         };

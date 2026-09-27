@@ -61,6 +61,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{accountId}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close an account (bank action)
+         * @description Bank-side lifecycle action. Rejected if reservedBalance > 0 (open holds must be captured or released first). Appends AccountClosed; the read model marks the account CLOSED and it disappears from customer lists.
+         */
+        post: operations["closeAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{accountId}/kyc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update KYC status (bank action) */
+        post: operations["setKycStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/transfers": {
         parameters: {
             query?: never;
@@ -118,6 +155,13 @@ export interface components {
             availableBalance?: number;
             /** Format: double */
             reservedBalance?: number;
+            /**
+             * @description Lifecycle status; CLOSED accounts are read-only
+             * @enum {string}
+             */
+            status?: "ACTIVE" | "CLOSED";
+            /** @enum {string} */
+            kycStatus?: "PENDING" | "VERIFIED" | "REJECTED";
             /** Format: date-time */
             openedAt?: string;
         };
@@ -252,6 +296,85 @@ export interface operations {
             };
             /** @description Insufficient balance (rejected at apply time) */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    closeAccount: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h; retries replay the original result (v2 §6). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                accountId: components["parameters"]["AccountId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description AccountClosed appended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSnapshot"];
+                };
+            };
+            /** @description Account not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account has open reservations or is already closed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setKycStatus: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client-supplied idempotency key persisted in processed_requests for 24h; retries replay the original result (v2 §6). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                accountId: components["parameters"]["AccountId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kycStatus: "PENDING" | "VERIFIED" | "REJECTED";
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description KYC status updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSnapshot"];
+                };
+            };
+            /** @description Account not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

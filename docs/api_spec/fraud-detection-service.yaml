@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Fraud Detection Service API
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Carried over from v1 (v2 §2, §9 step 7). Consumes account and payment events
     from Kafka and evaluates fraud rules. Read-only HTTP surface for flagged cases.
@@ -50,7 +50,58 @@ paths:
                 $ref: '#/components/schemas/FraudCase'
         '404':
           description: Case not found
+  /api/fraud/cases/{caseId}/review:
+    post:
+      summary: Review or dismiss a flagged case (bank action)
+      description: >
+        Bank-side decision on an OPEN case. REVIEWED marks it actioned;
+        DISMISSED marks it a false positive. Both append FraudCaseReviewed and
+        notify the customer when the flag is cleared.
+      operationId: reviewFraudCase
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [REVIEWED, DISMISSED]
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Updated case
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FraudCase'
+        '409':
+          description: Case not OPEN
+        '404':
+          description: Case not found
 components:
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-supplied idempotency key persisted in processed_requests for 24h.
+      schema:
+        type: string
+        maxLength: 64
   schemas:
     FraudCase:
       type: object
@@ -64,6 +115,11 @@ components:
         rule:
           type: string
           description: Fraud rule that fired (carried over from v1 rules)
+        riskScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Severity of the flag at trigger time
         triggeredByEvent:
           type: string
           description: Event type from account.events / payment.events that triggered the case
@@ -73,3 +129,7 @@ components:
         flaggedAt:
           type: string
           format: date-time
+        reviewedAt:
+          type: string
+          format: date-time
+          nullable: true

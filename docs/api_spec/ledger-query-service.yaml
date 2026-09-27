@@ -172,6 +172,14 @@ components:
         reservedBalance:
           type: number
           format: double
+        status:
+          type: string
+          enum: [ACTIVE, CLOSED]
+          description: Lifecycle state projected from AccountClosed events
+        kycStatus:
+          type: string
+          enum: [PENDING, VERIFIED, REJECTED]
+          description: Projected from AccountKycUpdated events
         updatedAt:
           type: string
           format: date-time

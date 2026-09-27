@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Notification Service API
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Carried over from v1 (v2 §2, §9 step 7). Consumes domain events from Kafka
     (account, loan, payment, trust-score topics) and sends customer notifications
@@ -17,6 +17,11 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: causeEvent
+          in: query
+          description: Filter by originating event type, e.g. TrustScoreChanged.
+          schema:
+            type: string
       responses:
         '200':
           description: Sent notifications
@@ -45,6 +50,10 @@ components:
         causeEvent:
           type: string
           description: e.g. LoanApproved, FundsCaptured, TrustScoreChanged
+        deliveryStatus:
+          type: string
+          enum: [SENT, RETRYING, DEAD_LETTERED]
+          description: SMTP delivery state; RETRYING/DEAD_LETTERED surface the DLQ state the bank log shows
         sentAt:
           type: string
           format: date-time

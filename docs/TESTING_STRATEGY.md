@@ -1,133 +1,107 @@
-# Testing Strategy
+# Testing Strategy (v2)
 
-## Test Pyramid
-
-```
-        /\
-       /  \          E2E Tests (docker-compose)
-      /____\         ~5% of test suite
-     /      \
-    /________\       Contract Tests (Spring Cloud Contract / Pact)
-   /          \      ~15% of test suite
-  /____________\
- /              \   Integration Tests (Testcontainers)
-/________________\   ~25% of test suite
- \              /   Unit Tests (JUnit 5 + Mockito)
-  \____________/     ~55% of test suite
-```
+> **Source of truth:** `HLD_LLD_SystemDesign_v2.md`. Extends the v1 test pyramid with
+> Testcontainers spinning up **Valkey** and **a second Postgres shard** in CI (v2 §0),
+> plus the three required concurrency/offline tests (§3 below). Scaffolding stage —
+> no test code exists yet; this document is the contract the tests must satisfy.
 
 ---
 
-## Unit Tests (per service)
+## 1. Test pyramid
 
-**Scope:** Domain logic, event application, saga steps, fraud rules, notification routing.
+| Level | Scope | Tools | Examples |
+|---|---|---|---|
+| Unit | domain logic in isolation | JUnit 5 | score formula `(3 - trustTier) * 10^9 + requestedAtEpochMillis`; trust-tier boundaries (40/41, 70/71, 90/91); token payload `{reservationId, accountId, amount, expiresAt}` |
+| Integration | one service + its stores | JUnit 5 + Testcontainers (Postgres, Valkey, Kafka, MongoDB) | event append with `UNIQUE(aggregate_id, version)`; `processed_requests` replay; reservation capture idempotency |
+| System | multi-service via API Gateway | Testcontainers compose + REST clients | full deposit → withdraw → statement flow; loan request → approval |
+| Concurrency (new in v2) | multi-instance contention | Testcontainers (Valkey + ≥2 Postgres shards) + parallel executors | the three tests in §3 |
+| Recovery | replay & resilience | Testcontainers | rebuild read model from sharded `ledger_events`; consumer restart |
 
-- **Tools:** JUnit 5 + Mockito
-- **Coverage target:** ≥ 80% of domain logic
-- **Structure:**
-  - Aggregate test: command → events → state transitions
-  - Rule test: fraud rule evaluation on sample events
-  - Notification test: event → channel mapping
+## 2. Infrastructure rules for concurrency tests
 
-**Example test cases:**
-1. `AccountOpened` event applied → account state OPEN
-2. `MoneyDeposited` event → balance increases
-3. `MoneyWithdrawn` with insufficient funds → `WithdrawalFailed` event emitted
-4. Transfer saga: source debited + destination credited → `TransferCompleted`
-5. Transfer saga: source insufficient funds → `TransferFailed`
-6. Fraud rule: velocity check (5+ transactions in 1 min) → `FraudFlagRaised`
-7. Event replay: replay all events → read model matches live state
+- Real **Valkey** container — Lua-script atomicity and Redisson `RFairLock` /
+  `RScoredSortedSet` semantics are exactly what's under test; mocking them would test
+  nothing.
+- **At least two Postgres shard containers** (`ds_apac`, `ds_eu`) so ShardingSphere
+  routing is exercised against physical targets, not a single database.
+- At least **two service instances** where the scenario demands multi-server behavior
+  (loan worker, withdrawal consumer).
+- Determinism comes from ordering guarantees (Kafka partition order, fair-lock queue
+  order), never from `Thread.sleep`.
 
----
+## 3. Required v2 concurrency/offline tests
 
-## Integration Tests (Testcontainers)
+### 3.1 Loan pool contention — exactly one approval
 
-**Scope:** Real database and broker interaction — no mocks.
+> Fires two simultaneous loan requests against a pool that can only satisfy one and
+> asserts exactly one is approved.
 
-- **Tools:** Testcontainers + JUnit 5
-- **Containers:** PostgreSQL 16, MongoDB 7, Kafka (Confluent), Redis (optional)
-- **Structure:**
-  - Spring Boot test slices with `@SpringBootTest`
-  - `@AutoConfigureMockMvc` for REST endpoint testing
-  - `@EmbeddedKafka` for Kafka consumer/producer tests (alternative to full container)
+- **Setup:** admin pool = ₹2,000 (`admin_pool:balance` in Valkey = 2000, matching
+  `admin_pool.available_balance`); two Loan Service worker instances connected to the
+  same Valkey.
+- **Action:** both instances concurrently submit a ₹2,000 loan request for two different
+  accounts of **equal trust tier** (equal tier forces the FCFS tiebreak of v2 §3.3).
+- **Assert:**
+  1. exactly one loan ends `DISBURSED` (`LoanApproved` + `LoanDisbursed` emitted once);
+  2. the other ends `WAITING_FOR_FUNDS` — not rejected, not approved;
+  3. final pool balance = 0, and `admin_pool.available_balance` (Postgres) agrees with
+     `admin_pool:balance` (Valkey);
+  4. after an `AdminPoolReplenished` event, the waiting request is re-checked and
+     becomes the next approval (highest-priority first).
 
-**Test cases:**
-1. Event store append: concurrent writes → optimistic concurrency conflict
-2. Kafka producer publishes → Kafka consumer receives
-3. Consumer group rebalancing → no lost events
-4. MongoDB read model updated after event consumption
-5. API Gateway routing to downstream services
-6. Docker Compose health checks pass
+### 3.2 Multi-server withdrawal — FCFS ordering
 
----
+> Fires two simultaneous withdrawals from two simulated server instances and asserts
+> FCFS ordering.
 
-## Contract Tests (Spring Cloud Contract / Pact)
+- **Setup:** account X with balance covering exactly **one** ₹1,500 withdrawal; two
+  simulated app-server instances publishing `WithdrawCommand`s to the Kafka topic keyed
+  by `accountId`; one Account Command consumer instance per partition.
+- **Action:** instance 1 publishes `WithdrawCommand(acc=X, amt=1500)` at t=0ms; instance
+  2 publishes the same at t=4ms (v2 §5.3 timing).
+- **Assert:**
+  1. the command the broker received first is applied first — `MoneyWithdrawn` appended
+     with `version = n`, then rejection for the second;
+  2. final balance = 0 with exactly one `MoneyWithdrawn` in `ledger_events`;
+  3. both commands were delivered **in broker-received order** to the same consumer
+     (partition-per-account), and the `RFairLock` acquisition order matches arrival
+     order (fairness, not barging — v2 §5.2);
+  4. the optimistic-concurrency constraint would reject any out-of-order append even if
+     the lock layer failed (`UNIQUE(aggregate_id, version)`, v2 §6).
 
-**Scope:** Ensure API/event schema compatibility between services and between versions.
+### 3.3 Offline payment — double capture rejected
 
-- **Tools:** Spring Cloud Contract (for REST contracts) + Pact (for event contracts)
-- **Contract location:** Each service publishes its own contracts; consumers verify against producer contracts in CI.
+> Captures the same reservation token twice and asserts the second capture is rejected.
 
-**Contract files:**
-- `account-command-service/src/test/contracts/` — REST contracts for deposit/withdraw/transfer
-- `ledger-query-service/src/test/contracts/` — REST contracts for balance/statements queries
-- `fraud-detection-service/src/test/contracts/` — Event contracts for `MoneyDeposited`, `TransferCompleted`
-- `notification-service/src/test/contracts/` — Event contracts for `FraudFlagRaised`, `TransferCompleted`
+- **Setup:** account with sufficient balance; `POST /api/reservations` creates a
+  reservation (`FundsReserved`, amount moved available → reserved) and mints a signed
+  Nimbus JOSE+JWT offline token; merchant device "goes offline".
+- **Action:** with connectivity restored, call
+  `POST /api/reservations/{id}/capture` **twice** with the same token — simulating the
+  same QR code shown to two merchants (the classic offline double-spend, v2 §4.2).
+- **Assert:**
+  1. first capture succeeds: `FundsCaptured` emitted once, reservation `status = CAPTURED`,
+     `captured_at` set, funds land in the merchant account;
+  2. second capture is rejected with **409 Conflict** and emits no second
+     `FundsCaptured` — the redeemed idempotency check keyed by `reservationId` plus the
+     partial unique index `idx_reservation_capture` hold;
+  3. the account is debited exactly once (reserved amount converted to a real debit
+     once);
+  4. a capture after TTL expiry returns **410 Gone** (`FundsReleased` already emitted;
+     v2 §4.2 step 7).
 
-**CI enforcement:** Contract tests run on every PR; a breaking change to an event schema fails the build.
+## 4. Additional concurrency & hygiene tests (v2 §6)
 
----
+| Test | Asserts |
+|---|---|
+| Optimistic concurrency | two appends at the same `version` for one aggregate → one succeeds, one violates `UNIQUE(aggregate_id, version)` |
+| Idempotency-key replay | same `Idempotency-Key` on a retried call returns the original response, no double-processing; key expires after 24h |
+| Trust score cache drift | Loan Service prices a request from its local tier cache (eventually consistent), not by a synchronous cross-service call (v2 §3.6) |
+| Sharding transparency | rows written via the logical `ledger_events` insert land in the correct physical shard per `region`; app code sees no shard details (v2 §7.1) |
+| Vertical split integrity | `account_pii` is not reachable through `account_core` queries — the column split is real, not just naming (v2 §7.2) |
 
-## End-to-End Tests (Docker Compose)
+## 5. What we deliberately do *not* test yet
 
-**Scope:** Full system against real infrastructure via `docker-compose up`.
-
-- **Tools:** REST Assured / Test REST client
-- **Test scenarios:**
-  1. Open account → check balance → list statements
-  2. Deposit → check balance updated → read model converges
-  3. Withdraw → check balance → insufficient funds → error
-  4. Transfer between accounts → both balances updated → saga completes
-  5. Fraud detection: trigger velocity rule → fraud alert raised → notification sent
-  6. Event replay: delete read model, replay events, assert read model matches original
-
----
-
-## Event Replay Correctness Testing
-
-**Goal:** Rebuild a read model from scratch from the event store and assert it matches the live read model.
-
-**Approach:**
-1. Capture current read model state (snapshot) before replay
-2. Delete read model collections/tables
-3. Replay all events from the event store in order
-4. Capture new read model state (snapshot) after replay
-5. Assert both snapshots are identical (field-by-field comparison)
-
-**Test harness:**
-```java
-@Test
-void eventReplayRebuildsReadModelCorrectly() {
-    // 1. Snapshot before
-    Map<UUID, Balance> before = ledgerQuery.getAllBalances();
-
-    // 2. Delete read models
-    ledgerQuery.deleteAllReadModels();
-
-    // 3. Replay events
-    eventReplayService.replayAllEvents();
-
-    // 4. Snapshot after
-    Map<UUID, Balance> after = ledgerQuery.getAllBalances();
-
-    // 5. Assert identical
-    assertEquals(before, after);
-}
-```
-
-**Edge cases to test:**
-- Event store is empty → read model is empty
-- Single event → read model has single entry
-- Duplicate events (replay of same stream twice) → read model unchanged (idempotent application)
-- Corrupt event (invalid JSON) → replay skips bad event, logs error, continues
-- Partial read model rebuild (account subset) → only affected accounts updated
+Scaffolding stage: no business logic exists, so all tests in this document are
+forward-looking contracts. When implementation starts (v2 §9 order), each mechanism's
+test lands with the mechanism, and the three tests in §3 gate their features.

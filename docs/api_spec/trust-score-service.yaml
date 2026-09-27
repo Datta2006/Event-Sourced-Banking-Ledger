@@ -1,0 +1,50 @@
+openapi: 3.0.3
+info:
+  title: Trust Score Service API
+  version: 0.2.0
+  description: >
+    v2 §3.6 — consumes account.events and loan.events and maintains a running
+    0–100 trust score per account. Publishes TrustScoreChanged on every change;
+    Loan Service consumes that into a local read-only tier cache. Tiers:
+    0–40 Low, 41–70 Medium, 71–90 High, 91–100 Excellent.
+paths:
+  /api/trust-score/{accountId}:
+    get:
+      summary: Get the current trust score and tier for an account
+      operationId: getTrustScore
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current score and tier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustScoreView'
+        '404':
+          description: Account has no trust score yet
+components:
+  schemas:
+    TrustScoreView:
+      type: object
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        tier:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 0=Low (0–40), 1=Medium (41–70), 2=High (71–90), 3=Excellent (91–100)
+        lastChangedAt:
+          type: string
+          format: date-time

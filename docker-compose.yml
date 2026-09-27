@@ -1,23 +1,29 @@
 version: "3.9"
 
+# v2 local demo topology (see docs/DEPLOYMENT.md).
+# Postgres is split into 3 region shards (ds_apac / ds_eu / ds_amer) to prove the
+# ShardingSphere fragmentation concept — deliberately not exhaustive (v2 §7).
+# Valkey replaces Redis (BSD vs SSPL — v2 §0); MongoDB is kept with FerretDB noted
+# as the OSI-clean swap (docs/OPEN_DECISIONS.md).
+
 services:
   # --- Service Discovery ---
   eureka-server:
-    image: ddbs-eureka-server:0.1.0
+    image: ddbs-eureka-server:0.2.0
     build:
       context: .
       dockerfile: infra/eureka/Dockerfile
     ports:
       - "8761:8761"
     environment:
-      - EUREKA_CLIENT_REGISTER_WITH_EURECCA=false
+      - EUREKA_CLIENT_REGISTER_WITH_EUREKA=false
       - EUREKA_CLIENT_FETCH_REGISTRY=false
     networks:
       - ddbs-network
 
   # --- Centralized Config ---
   config-server:
-    image: ddbs-config-server:0.1.0
+    image: ddbs-config-server:0.2.0
     build:
       context: .
       dockerfile: infra/config/Dockerfile
@@ -32,9 +38,102 @@ services:
     depends_on:
       - eureka-server
 
+  # --- Valkey (Redisson backend: loan priority queue, admin pool Lua debit, RFairLock) ---
+  valkey:
+    image: valkey/valkey:8.1
+    ports:
+      - "6379:6379"
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - ddbs-valkey-data:/data
+    networks:
+      - ddbs-network
+
+  # --- Kafka (partition-per-account ordering + event streaming) ---
+  kafka:
+    image: bitnami/kafka:3.7
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft mode — no Zookeeper
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - ddbs-kafka-data:/bitnami/kafka
+    networks:
+      - ddbs-network
+
+  # --- PostgreSQL region shards (hybrid fragmentation, v2 §7) ---
+  postgres-apac:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ddbs_apac
+      POSTGRES_USER: ddbs
+      POSTGRES_PASSWORD: ddbs
+    volumes:
+      - ddbs-postgres-apac-data:/var/lib/postgresql/data
+    networks:
+      - ddbs-network
+
+  postgres-eu:
+    image: postgres:16-alpine
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: ddbs_eu
+      POSTGRES_USER: ddbs
+      POSTGRES_PASSWORD: ddbs
+    volumes:
+      - ddbs-postgres-eu-data:/var/lib/postgresql/data
+    networks:
+      - ddbs-network
+
+  postgres-amer:
+    image: postgres:16-alpine
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_DB: ddbs_amer
+      POSTGRES_USER: ddbs
+      POSTGRES_PASSWORD: ddbs
+    volumes:
+      - ddbs-postgres-amer-data:/var/lib/postgresql/data
+    networks:
+      - ddbs-network
+
+  # --- MongoDB (read model; FerretDB is the drop-in Apache-2.0 swap — docs/OPEN_DECISIONS.md) ---
+  mongo:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: ddbs
+    volumes:
+      - ddbs-mongo-data:/data/db
+    networks:
+      - ddbs-network
+
+  # --- MailHog (fake SMTP for dev/notifications demo) ---
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - ddbs-network
+
   # --- API Gateway ---
   api-gateway:
-    image: ddbs-api-gateway:0.1.0
+    image: ddbs-api-gateway:0.2.0
     build:
       context: ./api-gateway
       dockerfile: Dockerfile
@@ -51,29 +150,35 @@ services:
 
   # --- Account Command Service ---
   account-command-service:
-    image: ddbs-account-command:0.1.0
+    image: ddbs-account-command:0.2.0
     build:
       context: ./account-command-service
       dockerfile: Dockerfile
     ports:
       - "8081:8081"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ddbs
+      # v2 §7: ShardingSphere routes by region across the three shards below
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-apac:5432/ddbs_apac
       - SPRING_DATASOURCE_USERNAME=ddbs
       - SPRING_DATASOURCE_PASSWORD=ddbs
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=valkey
+      - REDISSON_ADDRESS=redis://valkey:6379
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
     networks:
       - ddbs-network
     depends_on:
       - eureka-server
       - config-server
-      - postgres
+      - postgres-apac
+      - postgres-eu
+      - postgres-amer
       - kafka
+      - valkey
 
   # --- Ledger Query Service ---
   ledger-query-service:
-    image: ddbs-ledger-query:0.1.0
+    image: ddbs-ledger-query:0.2.0
     build:
       context: ./ledger-query-service
       dockerfile: Dockerfile
@@ -82,6 +187,9 @@ services:
     environment:
       - SPRING_DATA_MONGODB_URI=mongodb://mongo:27017/ddbs
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-apac:5432/ddbs_apac
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
     networks:
       - ddbs-network
@@ -90,10 +198,13 @@ services:
       - config-server
       - mongo
       - kafka
+      - postgres-apac
+      - postgres-eu
+      - postgres-amer
 
   # --- Fraud Detection Service ---
   fraud-detection-service:
-    image: ddbs-fraud-detection:0.1.0
+    image: ddbs-fraud-detection:0.2.0
     build:
       context: ./fraud-detection-service
       dockerfile: Dockerfile
@@ -111,7 +222,7 @@ services:
 
   # --- Notification Service ---
   notification-service:
-    image: ddbs-notification:0.1.0
+    image: ddbs-notification:0.2.0
     build:
       context: ./notification-service
       dockerfile: Dockerfile
@@ -119,6 +230,8 @@ services:
       - "8084:8084"
     environment:
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_MAIL_HOST=mailhog
+      - SPRING_MAIL_PORT=1025
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
     networks:
       - ddbs-network
@@ -126,70 +239,86 @@ services:
       - eureka-server
       - config-server
       - kafka
+      - mailhog
 
-  # --- PostgreSQL (Event Store + relational data) ---
-  postgres:
-    image: postgres:16-alpine
+  # --- Loan Service ---
+  loan-service:
+    image: ddbs-loan:0.2.0
+    build:
+      context: ./loan-service
+      dockerfile: Dockerfile
     ports:
-      - "5432:5432"
+      - "8085:8085"
     environment:
-      POSTGRES_DB: ddbs
-      POSTGRES_USER: ddbs
-      POSTGRES_PASSWORD: ddbs
-    volumes:
-      - ddbs-postgres-data:/var/lib/postgresql/data
-    networks:
-      - ddbs-network
-
-  # --- MongoDB (Read-model store) ---
-  mongo:
-    image: mongo:7.0
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_DATABASE: ddbs
-    volumes:
-      - ddbs-mongo-data:/data/db
-    networks:
-      - ddbs-network
-
-  # --- Kafka (message broker) ---
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-apac:5432/ddbs_apac
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=valkey
+      - REDISSON_ADDRESS=redis://valkey:6379
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
     networks:
       - ddbs-network
     depends_on:
-      - zookeeper
+      - eureka-server
+      - config-server
+      - postgres-apac
+      - kafka
+      - valkey
 
-  # --- Zookeeper (Kafka coordination; KRaft mode can replace in future) ---
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
+  # --- Payment & Reservation Service ---
+  payment-reservation-service:
+    image: ddbs-payment-reservation:0.2.0
+    build:
+      context: ./payment-reservation-service
+      dockerfile: Dockerfile
     ports:
-      - "2181:2181"
+      - "8086:8086"
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-apac:5432/ddbs_apac
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=valkey
+      - REDISSON_ADDRESS=redis://valkey:6379
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
     networks:
       - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+      - postgres-apac
+      - kafka
+      - valkey
 
-  # --- MailHog (fake SMTP for dev/notifications demo) ---
-  mailhog:
-    image: mailhog/mailhog:latest
+  # --- Trust Score Service ---
+  trust-score-service:
+    image: ddbs-trust-score:0.2.0
+    build:
+      context: ./trust-score-service
+      dockerfile: Dockerfile
     ports:
-      - "8025:8025"
-      - "1025:1025"
+      - "8087:8087"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-apac:5432/ddbs_apac
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
     networks:
       - ddbs-network
+    depends_on:
+      - eureka-server
+      - config-server
+      - postgres-apac
+      - kafka
 
 volumes:
-  ddbs-postgres-data:
+  ddbs-valkey-data:
+  ddbs-kafka-data:
+  ddbs-postgres-apac-data:
+  ddbs-postgres-eu-data:
+  ddbs-postgres-amer-data:
   ddbs-mongo-data:
 
 networks:

@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Payment & Reservation Service API
+  version: 0.2.0
+  description: >
+    v2 §4 — online payments call Account Command synchronously (MoneyWithdrawn /
+    MoneyDeposited as in v1). Offline payments use a pessimistic pre-commit
+    reservation: FundsReserved moves amount from available_balance to reserved_balance,
+    a Nimbus JOSE+JWT signed offline token is minted, first capture by reservationId
+    wins, uninvoked holds expire via FundsReleased.
+paths:
+  /api/payments:
+    post:
+      summary: Make an online payment
+      description: Synchronous path — Account Command validates and appends MoneyWithdrawn/MoneyDeposited (v2 §4.1).
+      operationId: payOnline
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromAccountId, toAccountId, amount]
+              properties:
+                fromAccountId:
+                  type: string
+                  format: uuid
+                toAccountId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  format: double
+      responses:
+        '200':
+          description: Payment completed
+        '400':
+          description: Insufficient funds or invalid request
+  /api/reservations:
+    post:
+      summary: Create an offline-payment reservation
+      description: >
+        Moves amount from available_balance to reserved_balance (FundsReserved event,
+        optimistic concurrency as in v1) and mints a signed offline token containing
+        {reservationId, accountId, amount, expiresAt} (v2 §4.2 steps 1–3).
+      operationId: createReservation
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId, amount]
+              properties:
+                accountId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  format: double
+                  minimum: 0.01
+                ttlMinutes:
+                  type: integer
+                  default: 30
+                  description: Reservation TTL; an expiry job later publishes FundsReleased for uninvoked holds.
+      responses:
+        '201':
+          description: Reservation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationView'
+  /api/reservations/{reservationId}:
+    get:
+      summary: Get reservation status
+      operationId: getReservation
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current reservation state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationView'
+        '404':
+          description: Reservation not found
+  /api/reservations/{reservationId}/capture:
+    post:
+      summary: Capture a reservation (merchant redeems the offline token)
+      description: >
+        Called when the merchant device regains connectivity. First capture wins —
+        the redeemed idempotency check keyed by reservationId rejects any replay of
+        the same token (offline double-spend prevention, v2 §4.2 step 5). Emits
+        FundsCaptured; the hold is converted into a real debit.
+      operationId: captureReservation
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [offlineToken, merchantAccountId]
+              properties:
+                offlineToken:
+                  type: string
+                  description: Signed Nimbus JOSE+JWT token; signature and expiry verified against the reservation record.
+                merchantAccountId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: FundsCaptured — transfer to merchant finalized
+        '409':
+          description: Reservation already captured / replayed token rejected
+        '410':
+          description: Reservation expired (FundsReleased already emitted)
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6).
+      schema:
+        type: string
+        maxLength: 64
+  schemas:
+    ReservationView:
+      type: object
+      properties:
+        reservationId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: double
+        status:
+          type: string
+          enum: [RESERVED, CAPTURED, RELEASED, EXPIRED]
+        expiresAt:
+          type: string
+          format: date-time
+        capturedAt:
+          type: string
+          format: date-time
+          nullable: true
+        offlineToken:
+          type: string
+          description: Signed offline payment token (QR-code payload); only returned at creation time.

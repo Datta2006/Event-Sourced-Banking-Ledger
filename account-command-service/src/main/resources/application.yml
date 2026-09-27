@@ -4,6 +4,9 @@ server:
 spring:
   application:
     name: account-command-service
+  # v2 §7: ShardingSphere Driver routes logical INSERTs into ledger_events to the
+  # region shard (ds_apac / ds_eu / ds_amer) selected by the registration-IP region.
+  # Config file to be added when the fragmentation retrofit lands (v2 §9, step 6).
   datasource:
     url: jdbc:postgresql://localhost:5432/ddbs
     username: ddbs
@@ -12,6 +15,8 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: false
+  # v2 §5: withdrawal commands arrive on a Kafka partition keyed by accountId,
+  # so a single consumer instance applies them in broker-received (FCFS) order.
   kafka:
     bootstrap-servers: localhost:9092
     producer:
@@ -23,6 +28,15 @@ spring:
       group-id: account-command-service
       properties:
         spring.json.trusted.packages: '*'
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+# v2 §5.2: Redisson client against Valkey; provides RFairLock("account-lock:" + accountId).
+redisson:
+  single-server-config:
+    address: "redis://localhost:6379"
 
 eureka:
   client:

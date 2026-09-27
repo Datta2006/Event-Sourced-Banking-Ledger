@@ -6,10 +6,40 @@
     <parent>
         <groupId>edu.cs465</groupId>
         <artifactId>ddbs-ledger</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.2.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>account-command-service</artifactId>
     <name>Account Command Service</name>
-    <description>Handles commands (deposits, withdrawals, transfers), validates business rules, appends events to the event store, publishes events via Kafka</description>
+    <description>Handles commands (deposits, withdrawals, transfers), appends events to the region-sharded event store, publishes events via Kafka. Withdrawals are ordered via Kafka partition-per-account plus Redisson RFairLock (v2 §5). Embeds ShardingSphere-JDBC for hybrid fragmentation (v2 §7).</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <!-- v2 §5: RFairLock around the debit path (FCFS ordering) -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+        </dependency>
+        <!-- v2 §7: region-based horizontal sharding + vertical column-split, at the JDBC layer -->
+        <dependency>
+            <groupId>org.apache.shardingsphere</groupId>
+            <artifactId>shardingsphere-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+    </dependencies>
 </project>

@@ -1,0 +1,48 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: payment-reservation-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ddbs
+    username: ddbs
+    password: ddbs
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      group-id: payment-reservation-service
+      properties:
+        spring.json.trusted.packages: '*'
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+# v2 §4.2: reservation TTL handling runs against Valkey via Redisson.
+redisson:
+  single-server-config:
+    address: "redis://localhost:6379"
+
+# v2 §4.2: offline payment tokens are signed asymmetrically (Nimbus JOSE+JWT).
+# The private key stays bank-side; merchant devices verify with the public key offline.
+offline-token:
+  keystore-path: classpath:offline-token-signing-key.pem
+  issuer: ddbs-payment-reservation
+  default-ttl-minutes: 30
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+    fetch-registry: true
+    register-with-eureka: true

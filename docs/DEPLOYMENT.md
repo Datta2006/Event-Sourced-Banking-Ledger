@@ -1,205 +1,116 @@
-# Deployment Guide
+# Deployment (v2)
 
-## Local Development
+> **Source of truth:** `HLD_LLD_SystemDesign_v2.md`. The root `docker-compose.yml` is the
+> working local demo: **Valkey** replaces Redis (license, v2 §0), Kafka runs in KRaft
+> mode (no Zookeeper), and Postgres is split into **3 region shards** — enough to prove
+> the fragmentation concept, deliberately not exhaustive (v2 §7). MongoDB is kept with
+> **FerretDB** noted as the OSI-clean swap (see `docs/OPEN_DECISIONS.md`).
 
-### Prerequisites
-- Docker Engine >= 24.0
-- Docker Compose V2 (standalone or Docker Desktop)
-- Java 17 (or use the dev container)
+---
 
-### Quick Start
+## 1. Topology
 
-```bash
-# Clone the repository
-git clone <repo-url>
-cd dbs
-
-# Build and start all services
-docker-compose up --build -d
-
-# Wait for services to be healthy (~10-15s)
-# Check status
-docker-compose ps
-
-# View logs
-docker-compose logs -f
-
-# Test the API Gateway
-curl http://localhost:8080/api/accounts/balance?accountId=<some-id>
-# Expected: 404 (no accounts yet)
-
-# Open the API Gateway Swagger UI (if enabled)
-open http://localhost:8080/swagger-ui.html
+```mermaid
+graph TB
+    subgraph Services
+        GW[api-gateway :8080]
+        CMD[account-command-service :8081]
+        QRY[ledger-query-service :8082]
+        FRD[fraud-detection-service :8083]
+        NTF[notification-service :8084]
+        LOAN[loan-service :8085]
+        PAY[payment-reservation-service :8086]
+        TRUST[trust-score-service :8087]
+    end
+    subgraph Infrastructure
+        EUR[eureka-server :8761]
+        CFG[config-server :8888]
+        KAFKA[(kafka :9092<br/>KRaft, no zookeeper)]
+        VAL[(valkey :6379)]
+        PG1[(postgres-apac :5433<br/>ddbs_apac)]
+        PG2[(postgres-eu :5434<br/>ddbs_eu)]
+        PG3[(postgres-amer :5435<br/>ddbs_amer)]
+        MONGO[(mongo :27017)]
+        MH[mailhog :8025/:1025]
+    end
+    CMD -.->|ShardingSphere routes<br/>by region| PG1 & PG2 & PG3
+    QRY -.->|ShardingSphere reads<br/>for replay| PG1 & PG2 & PG3
+    LOAN --> VAL
+    PAY --> VAL
+    CMD --> VAL
+    CMD --> KAFKA
+    LOAN --> KAFKA
+    PAY --> KAFKA
+    KAFKA --> QRY & TRUST & FRD & NTF
+    QRY --> MONGO
+    NTF --> MH
+    GW --> CMD & QRY & LOAN & PAY & TRUST & FRD & NTF
 ```
 
-### Available URLs
+## 2. Container inventory
 
-| Service | URL | Description |
+| Container | Image | Host port | Purpose |
+|---|---|---|---|
+| `eureka-server` | `ddbs-eureka-server:0.2.0` | 8761 | Service discovery |
+| `config-server` | `ddbs-config-server:0.2.0` | 8888 | Spring Cloud Config (mounts `./infra/config-repo`) |
+| `valkey` | `valkey/valkey:8.1` | 6379 | Redisson backend: `loan:queue` RScoredSortedSet, `admin_pool:balance` Lua debit, `RFairLock` per account |
+| `kafka` | `bitnami/kafka:3.7` (KRaft) | 9092 | Event streaming + partition-per-account command ordering |
+| `postgres-apac` | `postgres:16-alpine` | 5433 | Shard `ds_apac` (db `ddbs_apac`) |
+| `postgres-eu` | `postgres:16-alpine` | 5434 | Shard `ds_eu` (db `ddbs_eu`) |
+| `postgres-amer` | `postgres:16-alpine` | 5435 | Shard `ds_amer` (db `ddbs_amer`) |
+| `mongo` | `mongo:7.0` | 27017 | Read model (FerretDB drop-in if chosen) |
+| `mailhog` | `mailhog/mailhog` | 8025 / 1025 | Fake SMTP UI for notifications |
+| 8 service containers | `ddbs-*:0.2.0` | 8080–8087 | See `docs/ARCHITECTURE.md` §3 |
+
+## 3. Run order
+
+```bash
+# build everything first (services + the two infra modules)
+./mvnw -DskipTests package
+
+# start infrastructure, then services (compose handles depends_on ordering)
+docker compose up -d
+
+# watch service registration
+open http://localhost:8761          # Eureka dashboard
+open http://localhost:8025          # MailHog UI (notifications)
+```
+
+`depends_on` ordering in the compose file is startup order only — services additionally
+tolerate the broker/stores being briefly unavailable at boot (scaffolding note: wiring
+readiness probes is implementation-stage work).
+
+## 4. Sharding bootstrap (manual, implementation stage)
+
+The three shard databases start empty. When the fragmentation retrofit lands (v2 §9
+step 6), a bootstrap script creates the vertical-split schema
+(`account_core`, `account_pii`, `ledger_events`) on **each** shard and seeds
+ShardingSphere's datasource map (`ds_apac`, `ds_eu`, `ds_amer`). Until then the services
+point at a single default shard URL so early debugging stays simple (v2 §9 step 6:
+"don't do this first, it complicates early debugging").
+
+## 5. Environment variables (per service)
+
+| Variable | Consumed by | Meaning |
 |---|---|---|
-| API Gateway | http://localhost:8080/api | All client traffic |
-| Account Command | http://localhost:8081/api | Internal (via gateway) |
-| Ledger Query | http://localhost:8082/api | Read queries |
-| Fraud Detection | http://localhost:8083/api | Admin/queries |
-| Notification | http://localhost:8084/api | Admin/queries |
-| Eureka Dashboard | http://localhost:8761 | Service discovery UI |
-| Config Server | http://localhost:8888 | Config refresh |
-| MailHog (email dev) | http://localhost:8025 | Fake SMTP UI |
-| PostgreSQL | localhost:5432 | Event store |
-| MongoDB | localhost:27017 | Read models |
-| Kafka | localhost:9092 | Event bus |
+| `SPRING_KAFKA_BOOTSTRAP_SERVERS` | all | Kafka bootstrap (container-internal `kafka:9092`) |
+| `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD` | data-owning services | Default shard JDBC URL (ShardingSphere overrides routing per region once enabled) |
+| `SPRING_DATA_REDIS_HOST`, `REDISSON_ADDRESS` | account-command, loan, payment-reservation | Valkey location for Redisson |
+| `SPRING_DATA_MONGODB_URI` | ledger-query | Read-model store (swap host to `ferretdb:27017` with zero code change) |
+| `SPRING_MAIL_HOST`, `SPRING_MAIL_PORT` | notification | MailHog SMTP |
+| `EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE` | all | Discovery |
 
----
+## 6. Local demo scenario (once implemented)
 
-## Cloud / Submission Target
+1. Open accounts with distinct registration IPs → rows land in different shards.
+2. Seed `admin_pool` = ₹2,000; fire two ₹2,000 loan requests → one `DISBURSED`, one
+   `WAITING_FOR_FUNDS` (`docs/TESTING_STRATEGY.md` §3.1).
+3. Reserve ₹500 offline, scan the token twice → first capture wins, second rejected
+   (`docs/TESTING_STRATEGY.md` §3.3).
+4. Two simultaneous withdrawals → FCFS ordering at the broker + fair lock
+   (`docs/TESTING_STRATEGY.md` §3.2).
 
-### Recommended: Single VM with Docker Compose
+## 7. CI
 
-A single Ubuntu VM (2 vCPU, 4GB RAM) running Docker Compose satisfies the rubric's "containerized environment" requirement without needing Kubernetes complexity.
-
-**Justification:**
-- Minimal operational overhead for a course project
-- All 5 services + infra fit comfortably in 4GB RAM
-- Docker Compose is sufficient for demo-day show-and-tell
-- Easy to snapshot/backup for grading
-
-**Deployment steps:**
-```bash
-# On the VM
-git clone <repo-url>
-cd dbs
-docker-compose up -d
-
-# Health check
-curl -s http://localhost:8080/actuator/health | jq
-
-# Tail logs for demo
-docker-compose logs -f api-gateway
-```
-
-### Lightweight Kubernetes (Stretch Goal)
-
-If advanced deployment is desired:
-
-**Target:** k3s (Rancher) or minikube (1 node)
-
-**Manifests in `k8s/`:**
-- `namespace.yaml`
-- `configmap.yaml` (application.yml overrides)
-- `deployment-*.yaml` (one per service)
-- `service-*.yaml` (ClusterIPs + NodePort)
-- `ingress.yaml` (NGINX Ingress for external access)
-- `postgres-statefulset.yaml`
-- `mongo-statefulset.yaml`
-- `kafka-deployment.yaml` (Strimzi operator recommended)
-
----
-
-## Environment Variables / Config Strategy
-
-### Approach: Spring Cloud Config Server
-
-All services fetch configuration from `http://config-server:8888` at startup.
-
-**Config structure in `infra/config-repo/`:**
-```
-application.yml           # Common defaults
-account-command-service.yml   # Service-specific
-ledger-query-service.yml
-fraud-detection-service.yml
-notification-service.yml
-api-gateway.yml
-bootstrap.yml             # Config Server bootstrap
-```
-
-**Example `application.yml`:**
-```yaml
-spring:
-  profiles: default
-  datasource:
-    url: ${SPRING_DATASOURCE_URL}
-  kafka:
-    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS}
-```
-
-**Local overrides:** Each developer can create `application-local.yml` for personal settings (not committed).
-
-### Fallback: Docker Compose env vars
-
-All services read `SPRING_APPLICATION_JSON` as a fallback for quick environment overrides.
-
----
-
-## Health Checks
-
-### Spring Boot Actuator
-
-All services expose Actuator endpoints:
-```bash
-curl http://localhost:8081/actuator/health
-curl http://localhost:8082/actuator/health
-curl http://localhost:8083/actuator/metrics
-curl http://localhost:8084/actuator/metrics
-```
-
-### Docker Compose healthcheck
-
-```yaml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
-  interval: 30s
-  timeout: 10s
-  retries: 3
-  start_period: 30s
-```
-
----
-
-## Logging Aggregation
-
-### Format
-JSON structured logging to stdout:
-```json
-{"timestamp":"2026-09-26T00:00:00Z","level":"INFO","service":"account-command","traceId":"abc123","message":"Event persisted","eventType":"MoneyDeposited","accountId":"uuid-123"}
-```
-
-### Console aggregation
-`docker-compose logs -f` gives consolidated logs. For more sophisticated aggregation:
-- **Stretch:** Fluent Bit → Loki + Grafana (all open-source)
-
----
-
-## Basic Observability
-
-### Actuator Metrics
-
-| Endpoint | Metric | Meaning |
-|---|---|---|
-| `/actuator/health` | `status.up` | Service alive |
-| `/actuator/metrics/event.count` | Counter | Events produced |
-| `/actuator/metrics/kafka.consumer.records` | Gauge | Events consumed |
-| `/actuator/scheduledtasks` | List | Background jobs |
-
-### Prometheus (Stretch Goal)
-
-Add `micrometer-registry-prometheus` dependency and endpoint:
-```yaml
-management:
-  endpoints:
-    web:
-      exposure:
-        include: prometheus
-  metrics:
-    export:
-      prometheus:
-        enabled: true
-```
-
-Then scrape from `http://localhost:8081/actuator/prometheus`.
-
-### Grafana Dashboard
-
-Create dashboard panels:
-- Event production rate (/s)
-- Kafka consumer lag
-- Read model rebuild time
-- Saga completion rate
+Testcontainers spins up **Valkey** and **a second Postgres shard** in CI (v2 §0) so the
+concurrency tests in `docs/TESTING_STRATEGY.md` run against real infrastructure.

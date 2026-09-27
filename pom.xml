@@ -13,11 +13,11 @@
 
     <groupId>edu.cs465</groupId>
     <artifactId>ddbs-ledger</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <name>Event-Sourced Banking Ledger</name>
-    <description>Event-Sourced Banking Ledger with CQRS (CS465 Distributed Database Systems)</description>
+    <name>Event-Sourced Banking Ledger (v2)</name>
+    <description>Event-Sourced Banking Ledger — Distributed Systems + DDBS edition (CS465). See HLD_LLD_SystemDesign_v2.md as the single source of truth.</description>
 
     <properties>
         <java.version>17</java.version>
@@ -25,14 +25,25 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- v2 dependency versions -->
+        <redisson.version>4.6.1</redisson.version>
+        <shardingsphere.version>5.5.2</shardingsphere.version>
+        <nimbus-jose-jwt.version>10.0.2</nimbus-jose-jwt.version>
     </properties>
 
     <modules>
+        <!-- Infrastructure -->
+        <module>infra/eureka</module>
+        <module>infra/config</module>
+        <!-- 8 v2 services -->
+        <module>api-gateway</module>
         <module>account-command-service</module>
         <module>ledger-query-service</module>
+        <module>loan-service</module>
+        <module>payment-reservation-service</module>
+        <module>trust-score-service</module>
         <module>fraud-detection-service</module>
         <module>notification-service</module>
-        <module>api-gateway</module>
     </modules>
 
     <dependencyManagement>
@@ -43,6 +54,24 @@
                 <version>${spring-cloud.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <!-- v2: distributed locks / fair locks / priority queues (Valkey-backed) -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+            <!-- v2: hybrid horizontal+vertical fragmentation (JDBC-layer sharding) -->
+            <dependency>
+                <groupId>org.apache.shardingsphere</groupId>
+                <artifactId>shardingsphere-jdbc</artifactId>
+                <version>${shardingsphere.version}</version>
+            </dependency>
+            <!-- v2: offline payment token signing -->
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>nimbus-jose-jwt</artifactId>
+                <version>${nimbus-jose-jwt.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

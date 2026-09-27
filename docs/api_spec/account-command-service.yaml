@@ -1,280 +1,209 @@
 openapi: 3.0.3
 info:
   title: Account Command Service API
-  version: 1.0.0
-  description: |
-    Handles commands (deposits, withdrawals, transfers) as write operations.
-    All endpoints validate business rules and append events to the event store.
-
-servers:
-  - url: http://localhost:8081/api
-    description: Local development
-
+  version: 0.3.0
+  description: >
+    Write side of account aggregates (v2 §2, §5, §6). Commands are validated,
+    appended as events to the region-sharded ledger_events store (ShardingSphere-JDBC),
+    and published to Kafka. Withdrawal commands are ordered FCFS via Kafka
+    partition-per-account plus Redisson RFairLock.
 paths:
-  /accounts:
+  /api/accounts:
     post:
-      summary: Open a new bank account
+      summary: Open an account
+      description: >
+        Resolves the registration IP to a region (ip-location-db) which becomes the
+        account's shard key for horizontal fragmentation (v2 §7.1).
       operationId: openAccount
-      tags:
-        - Accounts
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/OpenAccountRequest'
+              type: object
+              required: [holderName, registrationIp, initialDeposit]
+              properties:
+                holderName:
+                  type: string
+                registrationIp:
+                  type: string
+                  format: ipv4
+                initialDeposit:
+                  type: number
+                  format: double
       responses:
         '201':
-          description: Account opened successfully
+          description: Account opened (AccountOpened event appended)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OpenAccountResponse'
-        '400':
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '409':
-          description: Email already registered
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /accounts/{accountId}/deposit:
+                $ref: '#/components/schemas/AccountSnapshot'
+  /api/accounts/{accountId}/deposits:
     post:
-      summary: Deposit money into an account
+      summary: Deposit money
       operationId: deposit
-      tags:
-        - Transactions
       parameters:
-        - name: accountId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DepositRequest'
+              $ref: '#/components/schemas/AmountRequest'
       responses:
-        '200':
-          description: Deposit processed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DepositResponse'
-        '400':
-          description: Invalid amount
+        '201':
+          description: MoneyDeposited event appended
         '404':
           description: Account not found
-        '409':
-          description: Account closed
-
-  /accounts/{accountId}/withdraw:
+  /api/accounts/{accountId}/withdrawals:
     post:
-      summary: Withdraw money from an account
+      summary: Withdraw money
+      description: >
+        The command is published to the account.commands topic keyed by accountId;
+        the consumer applies it under RFairLock("account-lock:{accountId}") (v2 §5).
       operationId: withdraw
-      tags:
-        - Transactions
       parameters:
-        - name: accountId
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AmountRequest'
+      responses:
+        '202':
+          description: WithdrawCommand accepted for ordered processing
+        '400':
+          description: Insufficient balance (rejected at apply time)
+  /api/transfers:
+    post:
+      summary: Transfer money between accounts
+      description: Orchestrated by the transfer saga (docs/SAGA_DESIGN.md).
+      operationId: transfer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromAccountId, toAccountId, amount]
+              properties:
+                fromAccountId:
+                  type: string
+                  format: uuid
+                toAccountId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  format: double
+      responses:
+        '202':
+          description: TransferCommand accepted (saga started)
+  /api/transfers/{transferId}:
+    get:
+      summary: Get transfer saga status
+      description: >
+        Saga progress for the transfer stepper UI (docs/SAGA_DESIGN.md §1): each
+        status maps to a saga step (INITIATED → SOURCE_DEBITED → TARGET_CREDITED →
+        COMPLETED; FAILED/COMPENSATED on the compensation path).
+      operationId: getTransferStatus
+      parameters:
+        - name: transferId
           in: path
           required: true
           schema:
             type: string
             format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/WithdrawRequest'
       responses:
         '200':
-          description: Withdrawal processed
+          description: Current saga state
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WithdrawResponse'
-        '400':
-          description: Invalid amount
+                $ref: '#/components/schemas/TransferStatusView'
         '404':
-          description: Account not found
-        '409':
-          description: Account closed or insufficient funds
-
-  /accounts/transfer:
-    post:
-      summary: Initiate a funds transfer between accounts
-      operationId: initiateTransfer
-      tags:
-        - Transfers
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TransferRequest'
-      responses:
-        '200':
-          description: Transfer initiated (asynchronous completion)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TransferInitiatedResponse'
-        '400':
-          description: Invalid request (same accounts, missing fields)
-        '404':
-          description: One or both accounts not found
-        '409':
-          description: Source account closed
-
+          description: Transfer not found
 components:
+  parameters:
+    AccountId:
+      name: accountId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Client-supplied idempotency key persisted in processed_requests for 24h;
+        retries replay the original result (v2 §6).
+      schema:
+        type: string
+        maxLength: 64
   schemas:
-    OpenAccountRequest:
-      type: object
-      required:
-        - accountHolderName
-        - email
-      properties:
-        accountHolderName:
-          type: string
-          format: email
-          maxLength: 100
-        email:
-          type: string
-          format: email
-          maxLength: 255
-        initialDeposit:
-          type: number
-          format: decimal
-          minimum: 0
-          default: 0
-        currency:
-          type: string
-          default: USD
-          enum: [USD, EUR, GBP, JPY]
-
-    OpenAccountResponse:
+    AccountSnapshot:
       type: object
       properties:
         accountId:
           type: string
           format: uuid
-        status:
+        holderName:
           type: string
-          enum: [OPEN]
+        region:
+          type: string
+          enum: [APAC, EU, AMER]
+          description: Resolved from registrationIp; the horizontal shard key (v2 §7.1)
+        availableBalance:
+          type: number
+          format: double
+        reservedBalance:
+          type: number
+          format: double
         openedAt:
           type: string
           format: date-time
-
-    DepositRequest:
-      type: object
-      required:
-        - amount
-      properties:
-        amount:
-          type: number
-          format: decimal
-          minimum: 0.01
-        reference:
-          type: string
-          maxLength: 100
-        currency:
-          type: string
-          default: USD
-
-    DepositResponse:
-      type: object
-      properties:
-        accountId:
-          type: string
-          format: uuid
-        eventId:
-          type: string
-          format: uuid
-        balanceAfter:
-          type: number
-          format: decimal
-        currency:
-          type: string
-
-    WithdrawRequest:
-      type: object
-      required:
-        - amount
-      properties:
-        amount:
-          type: number
-          format: decimal
-          minimum: 0.01
-        reference:
-          type: string
-          maxLength: 100
-
-    WithdrawResponse:
-      type: object
-      properties:
-        accountId:
-          type: string
-          format: uuid
-        eventId:
-          type: string
-          format: uuid
-        balanceAfter:
-          type: number
-          format: decimal
-
-    TransferRequest:
-      type: object
-      required:
-        - sourceAccountId
-        - destinationAccountId
-        - amount
-      properties:
-        sourceAccountId:
-          type: string
-          format: uuid
-        destinationAccountId:
-          type: string
-          format: uuid
-        amount:
-          type: number
-          format: decimal
-          minimum: 0.01
-        currency:
-          type: string
-          default: USD
-        description:
-          type: string
-          maxLength: 500
-
-    TransferInitiatedResponse:
+    TransferStatusView:
       type: object
       properties:
         transferId:
           type: string
           format: uuid
+        fromAccountId:
+          type: string
+          format: uuid
+        toAccountId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: double
         status:
           type: string
-          enum: [INITIATED]
-        initiatedAt:
+          enum: [INITIATED, SOURCE_DEBITED, TARGET_CREDITED, COMPLETED, FAILED, COMPENSATED]
+          description: Saga progress; FAILED/COMPENSATED mean TransferSourceReimbursed was appended
+        startedAt:
           type: string
           format: date-time
-
-    ErrorResponse:
+        updatedAt:
+          type: string
+          format: date-time
+        failureReason:
+          type: string
+          nullable: true
+    AmountRequest:
       type: object
+      required: [amount]
       properties:
-        error:
-          type: string
-        message:
-          type: string
-        timestamp:
-          type: string
-          format: date-time
+        amount:
+          type: number
+          format: double
+          minimum: 0.01

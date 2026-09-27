@@ -1,0 +1,568 @@
+/* ============================================================
+   Ledger Terminal — design system (see DESIGN.md at repo root)
+   Industrial/utilitarian. Ink on paper. Mono numerals everywhere.
+   ============================================================ */
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@700,900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+:root {
+  /* light theme — paper */
+  --paper: #fafaf7;
+  --surface: #ffffff;
+  --ink: #191c1f;
+  --muted: #8a8578;
+  --hairline: #e4e1d9;
+  --hairline-strong: #d6d2c6;
+  --accent: #17603f;
+  --accent-ink: #ffffff;
+  --credit: #1e7a46;
+  --debit: #b3402f;
+  --warning: #9a7b2d;
+  --info: #3d5a80;
+  --credit-bg: rgba(30, 122, 70, 0.08);
+  --debit-bg: rgba(179, 64, 47, 0.07);
+  --warning-bg: rgba(154, 123, 45, 0.1);
+  --info-bg: rgba(61, 90, 128, 0.08);
+  --accent-bg: rgba(23, 96, 63, 0.07);
+
+  /* type */
+  --font-display: 'Satoshi', 'IBM Plex Sans', sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* spacing scale (4px base) */
+  --sp-2xs: 2px;
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 12px;
+  --sp-lg: 16px;
+  --sp-xl: 24px;
+  --sp-2xl: 32px;
+  --sp-3xl: 48px;
+
+  /* radius — small; pill only for dots */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+
+  /* motion — intentional; springs are JS-driven, these are for CSS */
+  --ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --dur-micro: 100ms;
+  --dur-short: 180ms;
+  --dur-medium: 280ms;
+  --dur-long: 450ms;
+}
+
+[data-theme='dark'] {
+  --paper: #0e1116;
+  --surface: #161b22;
+  --ink: #e6e1d6;
+  --muted: #8b949e;
+  --hairline: #262c36;
+  --hairline-strong: #323a47;
+  --accent: #3ea574;
+  --accent-ink: #0e1116;
+  --credit: #4cba83;
+  --debit: #e0705c;
+  --warning: #c9a75d;
+  --info: #7d9cc0;
+  --credit-bg: rgba(76, 186, 131, 0.12);
+  --debit-bg: rgba(224, 112, 92, 0.1);
+  --warning-bg: rgba(201, 167, 93, 0.12);
+  --info-bg: rgba(125, 156, 192, 0.1);
+  --accent-bg: rgba(62, 165, 116, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* numerals are the product — mono, tabular, everywhere */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* ---- layout shell ---- */
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 232px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--hairline);
+  background: var(--surface);
+  padding: var(--sp-xl) var(--sp-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2xs);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  margin-bottom: var(--sp-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+
+.brand-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--accent);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* reduced motion: collapse all loops/transitions to static (tasteskill §6.B) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  transition: background var(--dur-micro) var(--ease-enter);
+}
+
+.nav-item:hover {
+  background: var(--accent-bg);
+}
+
+.nav-item.active {
+  background: var(--accent-bg);
+  border-color: var(--hairline-strong);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-key {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-2xl) var(--sp-2xl) var(--sp-3xl);
+  max-width: 1440px;
+}
+
+/* ---- typography helpers ---- */
+.page-title {
+  font-size: 28px;
+}
+
+.page-sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: var(--sp-xs);
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.section {
+  margin-top: var(--sp-2xl);
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-lg);
+  margin-bottom: var(--sp-md);
+  padding-bottom: var(--sp-sm);
+  border-bottom: 1px solid var(--hairline-strong);
+}
+
+.section-title {
+  font-size: 16px;
+}
+
+.section-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- balance figures ---- */
+.balance-lg {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.amount-credit {
+  color: var(--credit);
+}
+
+.amount-debit {
+  color: var(--debit);
+}
+
+/* ---- ruled register table (signature primitive — no shadows, hairlines) ---- */
+.register {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.register th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: var(--sp-sm) var(--sp-md);
+  border-bottom: 1px solid var(--hairline-strong);
+  white-space: nowrap;
+}
+
+.register td {
+  padding: var(--sp-sm) var(--sp-md);
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+}
+
+.register tbody tr {
+  transition: background var(--dur-micro) var(--ease-enter);
+}
+
+.register tbody tr:hover {
+  background: var(--accent-bg);
+}
+
+.register .num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- badges / status ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.badge.green {
+  color: var(--credit);
+  background: var(--credit-bg);
+  border-color: transparent;
+}
+
+.badge.red {
+  color: var(--debit);
+  background: var(--debit-bg);
+  border-color: transparent;
+}
+
+.badge.amber {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: transparent;
+}
+
+.badge.blue {
+  color: var(--info);
+  background: var(--info-bg);
+  border-color: transparent;
+}
+
+.badge.green-accent {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: transparent;
+}
+
+/* ---- panels (ruled boxes, not shadowed cards) ---- */
+.panel {
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+  border-radius: var(--r-md);
+}
+
+.panel-head {
+  padding: var(--sp-md) var(--sp-lg);
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+}
+
+.panel-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.panel-body {
+  padding: var(--sp-lg);
+}
+
+/* ---- buttons ---- */
+.btn {
+  appearance: none;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    background var(--dur-micro) var(--ease-enter),
+    transform var(--dur-micro) var(--ease-enter);
+}
+
+.btn:hover {
+  background: var(--paper);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn-primary:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---- forms ---- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+}
+
+.field label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.field input,
+.field select {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color var(--dur-micro) var(--ease-enter);
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+}
+
+/* ---- motion primitives ----
+   Entrances: CSS keyframes (predetermined motion, runs off the main thread).
+   React reuses keyed rows across polls, so the animation plays once per
+   mounted row — new rows enter, settled rows don't re-strobe. */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.row-in {
+  animation: row-in 240ms var(--ease-enter) both;
+}
+
+/* Saga progress: track is full-width; the fill animates scaleX only. */
+.saga-track {
+  position: relative;
+  height: 2px;
+  background: var(--hairline);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.saga-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 1px;
+  transform-origin: 0 50%;
+}
+
+/* ---- misc ---- */
+.live-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--credit);
+}
+
+.live-dot::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--credit);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.error-text {
+  color: var(--debit);
+  font-size: 12.5px;
+}
+
+.ok-text {
+  color: var(--credit);
+  font-size: 12.5px;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-lg);
+}
+
+@media (max-width: 900px) {
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    width: 64px;
+    padding: var(--sp-lg) var(--sp-xs);
+  }
+  .nav-label,
+  .brand span {
+    display: none;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: Loan Service API
+  version: 0.3.0
+  description: >
+    v2 §3 — loan requests are pushed onto the Valkey loan:queue priority queue
+    (score = (3 - trustTier) * 10^9 + requestedAtEpochMillis: tier first, FCFS second).
+    A worker pops the head and runs the atomic Lua pop-and-debit of admin_pool:balance;
+    success → LoanApproved → LoanDisbursed, failure → WAITING_FOR_FUNDS until
+    AdminPoolReplenished.
+paths:
+  /api/loans:
+    post:
+      summary: Request a loan
+      description: >
+        Trust tier is snapshotted from Loan Service's local read-only cache of
+        TrustScoreChanged events (no synchronous cross-service call, v2 §3.6).
+      operationId: requestLoan
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId, amount]
+              properties:
+                accountId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  format: double
+                  minimum: 0.01
+      responses:
+        '202':
+          description: Request queued (status QUEUED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoanRequestView'
+        '400':
+          description: Invalid request
+  /api/loans/queue:
+    get:
+      summary: Current loan priority queue
+      description: >
+        Snapshot of the Valkey `loan:queue` scored sorted set — entries in priority
+        order (trust tier first, FCFS within tier). `position` is 1-based; the UI
+        polls this to show the queue reordering as tier/FCFS resolve.
+      operationId: getLoanQueue
+      responses:
+        '200':
+          description: Ordered queue snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoanQueueView'
+  /api/loans/pool:
+    get:
+      summary: Admin pool balance
+      description: Current `admin_pool:balance` in Valkey — the fund the Lua pop-and-debit draws from (v2 §3.4).
+      operationId: getAdminPool
+      responses:
+        '200':
+          description: Pool snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPoolView'
+  /api/loans/{loanId}:
+    get:
+      summary: Get loan status
+      operationId: getLoan
+      parameters:
+        - name: loanId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current loan state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoanRequestView'
+        '404':
+          description: Loan not found
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-supplied idempotency key persisted in processed_requests for 24h (v2 §6).
+      schema:
+        type: string
+        maxLength: 64
+  schemas:
+    LoanRequestView:
+      type: object
+      properties:
+        loanId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: double
+        trustTier:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 0=Low, 1=Medium, 2=High, 3=Excellent — snapshotted at request time
+        status:
+          type: string
+          enum: [QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED]
+        requestedAt:
+          type: string
+          format: date-time
+    LoanQueueView:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoanQueueEntry'
+        generatedAt:
+          type: string
+          format: date-time
+    LoanQueueEntry:
+      type: object
+      properties:
+        loanId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: double
+        trustTier:
+          type: integer
+          minimum: 0
+          maximum: 3
+        status:
+          type: string
+          enum: [QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED]
+        position:
+          type: integer
+          minimum: 1
+          description: 1-based position in priority order (tier first, FCFS within tier)
+        requestedAt:
+          type: string
+          format: date-time
+    AdminPoolView:
+      type: object
+      properties:
+        balance:
+          type: number
+          format: double
+        currency:
+          type: string
+          default: INR
+        updatedAt:
+          type: string
+          format: date-time

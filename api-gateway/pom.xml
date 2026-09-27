@@ -6,10 +6,25 @@
     <parent>
         <groupId>edu.cs465</groupId>
         <artifactId>ddbs-ledger</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.2.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>api-gateway</artifactId>
     <name>API Gateway</name>
-    <description>Single entry point: Spring Cloud Gateway with routing, auth pass-through, aggregation for the frontend</description>
+    <description>Spring Cloud Gateway + Eureka discovery entry point routing to all 7 backing services; forwards Idempotency-Key headers (v2 §2, §6).</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
+        </dependency>
+    </dependencies>
 </project>

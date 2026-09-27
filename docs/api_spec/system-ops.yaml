@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: System Ops API
+  version: 0.1.0
+  description: >
+    Read-only ops surface for the dashboard System/Ops view (docs/ARCHITECTURE.md §1, §3):
+    Eureka service registry, Postgres region shards behind ShardingSphere, and Kafka
+    consumer lag. Dev-only facade; no state-changing operations. Served behind the
+    API gateway under /api/ops.
+paths:
+  /api/ops/services:
+    get:
+      summary: Service registry snapshot
+      operationId: listServiceInstances
+      responses:
+        '200':
+          description: Registered instances (from Eureka)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceInstanceView'
+  /api/ops/shards:
+    get:
+      summary: Database shard status
+      description: One entry per physical Postgres shard; region mapping per v2 §7.1.
+      operationId: listShards
+      responses:
+        '200':
+          description: Region shards
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ShardView'
+  /api/ops/kafka:
+    get:
+      summary: Kafka topics and consumer lag
+      operationId: listKafkaTopics
+      responses:
+        '200':
+          description: Topic lag overview
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KafkaTopicView'
+components:
+  schemas:
+    ServiceInstanceView:
+      type: object
+      properties:
+        serviceId:
+          type: string
+          description: Eureka service id, e.g. account-command-service
+        instanceId:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        status:
+          type: string
+          enum: [UP, DOWN, STARTING]
+        registeredAt:
+          type: string
+          format: date-time
+    ShardView:
+      type: object
+      properties:
+        shardId:
+          type: string
+          description: Physical shard name, e.g. ledger_eu
+        region:
+          type: string
+          enum: [APAC, EU, AMER]
+        host:
+          type: string
+        port:
+          type: integer
+        status:
+          type: string
+          enum: [UP, DOWN]
+        rowCounts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Table name → row count (for example ledger_events → 1234)
+    KafkaTopicView:
+      type: object
+      properties:
+        topic:
+          type: string
+          description: e.g. account.events (partition-per-account for commands, docs/EVENT_CATALOG.md)
+        partitions:
+          type: integer
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/KafkaGroupLag'
+    KafkaGroupLag:
+      type: object
+      properties:
+        groupId:
+          type: string
+        lag:
+          type: integer
+          description: Total unconsumed messages across partitions

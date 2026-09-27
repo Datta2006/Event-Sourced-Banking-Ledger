@@ -1,218 +1,104 @@
-# Event Catalog
+# Event Catalog (v2)
 
-All domain events are immutable, append-only entries in the event store and are also published to Kafka for async consumption.
-
-## Event Schema Convention
-
-```json
-{
-  "eventId": "uuid",
-  "aggregateId": "uuid",
-  "aggregateType": "Account | Transfer",
-  "eventType": "AccountOpened | MoneyDeposited | ...",
-  "payload": { ... },
-  "metadata": {
-    "userId": "string",
-    "timestamp": "ISO-8601",
-    "version": 1
-  }
-}
-```
-
-## Event Table Schema (PostgreSQL)
-
-```sql
-CREATE TABLE events (
-    event_id       UUID PRIMARY KEY,
-    aggregate_id   UUID NOT NULL,
-    aggregate_type VARCHAR(50) NOT NULL,
-    event_type     VARCHAR(100) NOT NULL,
-    payload        JSONB NOT NULL,
-    metadata       JSONB,
-    version        BIGINT NOT NULL,
-    occurred_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Optimistic concurrency: one row per (aggregate_id, version)
-CREATE UNIQUE INDEX idx_events_aggregate_version ON events(aggregate_id, version);
--- Fast lookup by aggregate
-CREATE INDEX idx_events_aggregate ON events(aggregate_id, occurred_at);
--- Fast lookup by event type for consumers
-CREATE INDEX idx_events_type ON events(event_type, occurred_at);
-```
-
-**Optimistic concurrency enforcement:** When appending events for an aggregate, the expected version must match the current max version in the store. If a conflict is detected, the command is rejected — this prevents double-application from retries or out-of-order delivery.
-
-**Event ordering per aggregate:** Guaranteed by the `version` sequence number within each `aggregate_id`. The event store enforces monotonically increasing version per aggregate. Global ordering across aggregates is not guaranteed; consumers must handle events from different aggregates independently.
+> **Source of truth:** `HLD_LLD_SystemDesign_v2.md`. Event names below match v2 exactly
+> (`FundsReserved`, `FundsCaptured`, `FundsReleased`, `LoanApproved`, `LoanDisbursed`,
+> `LoanRepaidOnTime`/`LoanRepaidLate`, `LoanDefaulted`, `AdminPoolReplenished`,
+> `TrustScoreChanged`, plus the carried-over account events). All payloads are JSON
+> serialized with `JsonSerializer`; every event carries `eventId`, `aggregateId`,
+> `version`, `occurredAt`.
 
 ---
 
-## Domain Events
+## 1. Topics
 
-### Account Lifecycle
-
-| Event | Producing Service | Version | Consumers |
+| Topic | Partitioning | Producers | Consumers |
 |---|---|---|---|
-| `AccountOpened` | Account Command | 1 | Ledger Query, Fraud Detection, Notification |
-| `AccountClosed` | Account Command | 1 | Ledger Query, Notification |
+| `account.commands` | key = `accountId` (partition-per-account) | API-facing services publishing withdrawal/deposit/transfer **commands** (v2 §5.2 allows publishing into `account.events` instead — see `docs/OPEN_DECISIONS.md`) | Account Command Service |
+| `account.events` | key = `accountId` (partition-per-account) | Account Command Service | Ledger Query, Trust Score, Fraud Detection, Notification |
+| `loan.events` | key = `accountId` / `loanId` | Loan Service | Trust Score, Fraud Detection, Notification, Ledger Query |
+| `payment.events` | key = `accountId` / `reservationId` | Payment & Reservation Service | Trust Score, Fraud Detection, Notification, Ledger Query |
+| `trust-score.events` | key = `accountId` | Trust Score Service | Loan Service (local tier cache), Notification |
 
-**AccountOpened payload:**
-```json
-{
-  "accountId": "uuid",
-  "accountHolderName": "string",
-  "email": "string",
-  "initialBalance": 0.00,
-  "currency": "USD",
-  "openedAt": "2026-09-26T00:00:00Z"
-}
-```
+Kafka guarantees only one partition holds all messages for a given key, and only one
+consumer instance processes a given partition at a time — FCFS ordering happens at the
+broker (v2 §5.2).
 
 ---
 
-### Money Movement
+## 2. Account events — topic `account.events`
 
-| Event | Producing Service | Version | Consumers |
-|---|---|---|---|
-| `MoneyDeposited` | Account Command | 1 | Ledger Query, Fraud Detection, Notification |
-| `MoneyWithdrawn` | Account Command | 1 | Ledger Query, Fraud Detection, Notification |
-| `WithdrawalFailed` | Account Command | 1 | Notification |
+Carried over from v1. Appended to the region-sharded `ledger_events` store by
+Account Command Service (optimistic concurrency: `UNIQUE(aggregate_id, version)`, v2 §6).
 
-**MoneyDeposited payload:**
-```json
-{
-  "accountId": "uuid",
-  "amount": 100.00,
-  "currency": "USD",
-  "balanceAfter": 100.00,
-  "depositedAt": "2026-09-26T00:00:00Z",
-  "reference": "string"
-}
-```
+| Event | Payload (beyond envelope) | Notes |
+|---|---|---|
+| `AccountOpened` | `holderName`, `region`, `registrationIp`, `openedAt` | Region resolved at open time from registration IP via ip-location-db; `region` becomes the shard key (v2 §7.1) |
+| `AccountClosed` | `closedAt`, `reason` | Carried over from v1 account lifecycle |
+| `MoneyDeposited` | `accountId`, `amount`, `currency` | Trust Score: +0.5 per ₹10,000 deposited, capped +5/day (v2 §3.6) |
+| `MoneyWithdrawn` | `accountId`, `amount`, `currency` | Written under Redisson `RFairLock("account-lock:" + accountId)` in the withdrawal path (v2 §5.2) |
 
-**MoneyWithdrawn payload** — same shape, with `withdrawnAt` and `balanceAfter`.
+## 3. Loan events — topic `loan.events`
 
-**WithdrawalFailed payload:**
-```json
-{
-  "accountId": "uuid",
-  "amount": 500.00,
-  "reason": "INSUFFICIENT_FUNDS",
-  "failedAt": "2026-09-26T00:00:00Z"
-}
-```
+New in v2 (§3). Loan Service is the sole producer.
 
----
+| Event | Payload | Notes |
+|---|---|---|
+| `LoanApproved` | `loanId`, `accountId`, `amount`, `trustTier` | Emitted after the atomic Lua pop-and-debit of `admin_pool:balance` succeeds (v2 §3.4) |
+| `LoanDisbursed` | `loanId`, `accountId`, `amount`, `disbursedAt` | Follows `LoanApproved`; `loan_requests.status = DISBURSED`. Trust Score treats this as "LoanTaken (disbursed)": −5, recovered on repayment (v2 §3.4, §3.6) |
+| `LoanRepaidOnTime` | `loanId`, `accountId`, `amount` | Trust Score: +10 (v2 §3.6). Also triggers `AdminPoolReplenished` |
+| `LoanRepaidEarly` | `loanId`, `accountId`, `amount` | Trust Score: +15 (v2 §3.6). Also triggers `AdminPoolReplenished` |
+| `LoanRepaidLate` | `loanId`, `accountId`, `amount` | Trust Score: −8 (v2 §3.6). Also triggers `AdminPoolReplenished` |
+| `LoanDefaulted` | `loanId`, `accountId`, `amountOutstanding` | Trust Score: −20 (v2 §3.6) |
+| `AdminPoolReplenished` | `poolId`, `amount`, `reason` (`LOAN_REPAID` \| `ADMIN_DEPOSIT`) | E.g., a loan gets repaid or the admin deposits more; Loan Service re-checks the `WAITING_FOR_FUNDS` list, highest-priority first (v2 §3.4) |
 
-### Transfers (Saga)
+## 4. Payment & reservation events — topic `payment.events`
 
-| Event | Producing Service | Version | Consumers |
-|---|---|---|---|
-| `TransferInitiated` | Account Command | 1 | Ledger Query, Fraud Detection, Notification |
-| `TransferCompleted` | Account Command | 1 | Ledger Query, Fraud Detection, Notification |
-| `TransferFailed` | Account Command | 1 | Ledger Query, Notification |
-| `TransferCompensated` | Account Command | 1 | Ledger Query, Notification |
+New in v2 (§4). Payment & Reservation Service is the sole producer.
 
-**TransferInitiated payload:**
-```json
-{
-  "transferId": "uuid",
-  "sourceAccountId": "uuid",
-  "destinationAccountId": "uuid",
-  "amount": 250.00,
-  "currency": "USD",
-  "status": "PENDING",
-  "initiatedAt": "2026-09-26T00:00:00Z"
-}
-```
+| Event | Payload | Notes |
+|---|---|---|
+| `FundsReserved` | `reservationId`, `accountId`, `amount`, `expiresAt` | Pessimistic pre-commit: moves `amount` from `available_balance` to `reserved_balance` with optimistic concurrency like v1 (v2 §4.2 step 1) |
+| `FundsCaptured` | `reservationId`, `accountId`, `merchantAccountId`, `amount`, `capturedAt` | First capture by `reservationId` wins — any replay of the same token is rejected (idempotency table + partial unique index, v2 §4.2 step 5, §4.3) |
+| `FundsReleased` | `reservationId`, `accountId`, `amount`, `reason` (`EXPIRED` \| `MERCHANT_DECLINED`) | Scheduled TTL job returns uninvoked holds to `available_balance` (v2 §4.2 step 7) |
 
-**TransferCompleted payload:**
-```json
-{
-  "transferId": "uuid",
-  "sourceAccountId": "uuid",
-  "destinationAccountId": "uuid",
-  "amount": 250.00,
-  "currency": "USD",
-  "sourceBalanceAfter": 750.00,
-  "destinationBalanceAfter": 1250.00,
-  "completedAt": "2026-09-26T00:00:00Z"
-}
-```
+## 5. Trust score events — topic `trust-score.events`
 
-**TransferFailed payload:**
-```json
-{
-  "transferId": "uuid",
-  "sourceAccountId": "uuid",
-  "destinationAccountId": "uuid",
-  "amount": 250.00,
-  "currency": "USD",
-  "failureReason": "INSUFFICIENT_FUNDS | TIMEOUT | FRAUD_FLAG",
-  "failedAt": "2026-09-26T00:00:00Z"
-}
-```
+| Event | Payload | Notes |
+|---|---|---|
+| `TrustScoreChanged` | `accountId`, `previousScore`, `newScore`, `previousTier`, `newTier`, `cause` | Tiers: 0–40 Low, 41–70 Medium, 71–90 High, 91–100 Excellent (v2 §3.6). Loan Service consumes this to refresh its local read-only tier cache — no synchronous cross-service call at loan-request time |
 
-**TransferCompensated payload:**
-```json
-{
-  "transferId": "uuid",
-  "sourceAccountId": "uuid",
-  "destinationAccountId": "uuid",
-  "amount": 250.00,
-  "compensatedAt": "2026-09-26T00:00:00Z",
-  "reason": "string"
-}
-```
+## 6. Commands (not events) — topic `account.commands`
 
----
+Commands are requests to change state, published by edge services and consumed by
+Account Command Service (v2 §5.2). They are not appended to `ledger_events`.
 
-### Fraud
+| Command | Payload | Notes |
+|---|---|---|
+| `DepositCommand` | `accountId`, `amount`, `idempotencyKey` | |
+| `WithdrawCommand` | `accountId`, `amount`, `idempotencyKey` | Keyed by `accountId` → partition-per-account ordering; guarded by `RFairLock` at the consumer (v2 §5.2–§5.3) |
+| `TransferCommand` | `fromAccountId`, `toAccountId`, `amount`, `idempotencyKey` | Drives the transfer saga (see `docs/SAGA_DESIGN.md`) |
 
-| Event | Producing Service | Version | Consumers |
-|---|---|---|---|
-| `FraudFlagRaised` | Fraud Detection | 1 | Notification |
-| `FraudFlagCleared` | Fraud Detection | 1 | Notification |
+## 7. Transfer saga orchestration events — topic `account.events`
 
-**FraudFlagRaised payload:**
-```json
-{
-  "flagId": "uuid",
-  "accountId": "uuid",
-  "transferId": "uuid | null",
-  "severity": "LOW | MEDIUM | HIGH | CRITICAL",
-  "rule": "string",
-  "description": "string",
-  "raisedAt": "2026-09-26T00:00:00Z"
-}
-```
+Carried over from v1 (exact v1 names retained; flagged in `docs/OPEN_DECISIONS.md`).
+The underlying ledger mutations are ordinary `MoneyWithdrawn` / `MoneyDeposited` events.
 
----
+| Event | Payload | Notes |
+|---|---|---|
+| `TransferInitiated` | `transferId`, `fromAccountId`, `toAccountId`, `amount` | Saga starts |
+| `TransferSourceDebited` | `transferId`, `fromAccountId`, `amount` | Source leg done |
+| `TransferTargetCredited` | `transferId`, `toAccountId`, `amount` | Target leg done |
+| `TransferCompleted` | `transferId` | Saga finished successfully |
+| `TransferFailed` | `transferId`, `reason` | Saga aborted |
+| `TransferSourceReimbursed` | `transferId`, `fromAccountId`, `amount` | Compensation: money returned to source after target-leg failure |
 
-### Notifications
+## 8. Consumer effects summary (Trust Score, v2 §3.6)
 
-| Event | Producing Service | Version | Consumers |
-|---|---|---|---|
-| `NotificationSent` | Notification | 1 | (none — terminal) |
-
-**NotificationSent payload:**
-```json
-{
-  "notificationId": "uuid",
-  "accountId": "uuid",
-  "channel": "EMAIL | WEBHOOK | IN_APP",
-  "subject": "string",
-  "body": "string",
-  "sentAt": "2026-09-26T00:00:00Z",
-  "status": "SENT | FAILED"
-}
-```
-
----
-
-## Event Versioning Strategy
-
-1. **Backward-compatible changes** (new optional fields in payload): bump minor version of the event type (e.g., `MoneyDeposited` v2). Old consumers ignore unknown fields (Jackson `FAIL_ON_UNKNOWN_PROPERTIES=false`).
-2. **Breaking changes** (field renamed/removed): introduce new event type (e.g., `MoneyDepositedV2`) with a migration window where both event types are produced.
-3. All events include a top-level `metadata.version` (integer) indicating the schema version of that event instance.
-4. The event store retains all versions — no in-place mutation of events.
+| Event | Effect on trust score |
+|---|---|
+| `MoneyDeposited` | +0.5 per ₹10,000 deposited (capped +5/day) |
+| `LoanRepaidOnTime` | +10 |
+| `LoanRepaidEarly` | +15 |
+| `LoanTaken` (`LoanDisbursed`) | −5 (recovered on repayment) |
+| `LoanRepaidLate` | −8 |
+| `LoanDefaulted` | −20 |

@@ -1,116 +1,161 @@
-# Data Model — Per-Service Ownership
+# Data Model (v2)
 
-## Data Ownership
-
-| Service | Database | Type | Rationale |
-|---|---|---|---|
-| **Account Command** | PostgreSQL (`ddbs`) | Relational | ACID required for event store writes and account balance updates |
-| **Ledger Query** | MongoDB (`ddbs`) | Document | Denormalised read models fit document schema; flexible for query patterns |
-| **Fraud Detection** | PostgreSQL | Relational | Fraud rules and alert state need ACID and relationships |
-| **Notification** | PostgreSQL | Relational | Notification log and delivery status |
-| **API Gateway** | None | — | Stateless routing layer |
+> **Source of truth:** `HLD_LLD_SystemDesign_v2.md` — schemas from §3.2, §4.3, §6, §7.
+> Table names, columns, and constraints below match v2 exactly. For the fragmentation
+> rationale and region-resolution flow see `docs/FRAGMENTATION_DESIGN.md`.
 
 ---
 
-## Event Store Schema (PostgreSQL — shared)
+## 1. Loan Service tables (v2 §3.2)
 
 ```sql
-CREATE TABLE events (
-    event_id       UUID PRIMARY KEY,
-    aggregate_id   UUID NOT NULL,
-    aggregate_type VARCHAR(50) NOT NULL,
-    event_type     VARCHAR(100) NOT NULL,
-    payload        JSONB NOT NULL,
-    metadata       JSONB,
-    version        BIGINT NOT NULL,
-    occurred_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+-- Owned by Loan Service
+CREATE TABLE admin_pool (
+  pool_id UUID PRIMARY KEY,
+  available_balance NUMERIC(18,2) NOT NULL,
+  version INT NOT NULL                    -- optimistic concurrency, mirrors event-store pattern
 );
 
-CREATE UNIQUE INDEX idx_events_aggregate_version ON events(aggregate_id, version);
-CREATE INDEX idx_events_aggregate ON events(aggregate_id, occurred_at);
-CREATE INDEX idx_events_type ON events(event_type, occurred_at);
+CREATE TABLE loan_requests (
+  loan_id       UUID PRIMARY KEY,
+  account_id    UUID NOT NULL,
+  amount        NUMERIC(18,2) NOT NULL,
+  trust_tier    SMALLINT NOT NULL,        -- 0=Low .. 3=Excellent, snapshotted at request time
+  requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status        VARCHAR(20) NOT NULL      -- QUEUED, WAITING_FOR_FUNDS, APPROVED, DISBURSED, REJECTED
+);
 ```
 
-### Optimistic Concurrency
-- Each write includes expected `version` = current max version + 1
-- Conflict → command rejected with `409 CONFLICT`
-- Guarantees exactly-once semantics per aggregate despite retries
+Runtime companions of these tables (not SQL-resident, but part of the loan data model):
 
----
+- **`loan:queue`** — Redisson `RScoredSortedSet` on Valkey. Score =
+  `(3 - trustTier) * 10_000_000_000L + requestedAtEpochMillis`; lower score pops first
+  (v2 §3.3).
+- **`admin_pool:balance`** — the Valkey mirror of `admin_pool.available_balance` that the
+  atomic Lua script debits (`EVAL`): approved (`1`) or insufficient (`0`) (v2 §3.4).
 
-## Ledger Query Read Models (MongoDB)
+## 2. Reservation tables (v2 §4.3)
 
-### `balances` collection
-```javascript
-{
-  _id: "accountId",          // account UUID
-  balance: 1000.00,
-  currency: "USD",
-  accountHolderName: "string",
-  status: "OPEN",
-  lastUpdated: "2026-09-26T00:00:00Z",
-  eventVersion: 5
-}
+```sql
+CREATE TABLE reservations (
+  reservation_id UUID PRIMARY KEY,
+  account_id     UUID NOT NULL,
+  amount         NUMERIC(18,2) NOT NULL,
+  status         VARCHAR(20) NOT NULL,   -- RESERVED, CAPTURED, RELEASED, EXPIRED
+  expires_at     TIMESTAMPTZ NOT NULL,
+  captured_at    TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX idx_reservation_capture ON reservations (reservation_id) WHERE status = 'CAPTURED';
 ```
 
-### `statements` collection
-```javascript
-{
-  _id: ObjectId,
-  accountId: "uuid",
-  eventId: "uuid",
-  eventType: "MoneyDeposited",
-  amount: 100.00,
-  balanceAfter: 100.00,
-  counterpartyAccountId: "uuid | null",
-  occurredAt: "2026-09-26T00:00:00Z",
-  reference: "string"
-}
+The partial unique index is the database-level backstop for the capture idempotency
+check: at most one `CAPTURED` row can ever exist per `reservation_id`, so a replayed
+offline token cannot double-spend even if the application-level check races (v2 §4.2
+step 5). Signed offline tokens are Nimbus JOSE+JWT JWTs containing
+`{reservationId, accountId, amount, expiresAt}`; they are not stored server-side beyond
+the reservation row itself.
+
+## 3. Concurrency-hygiene tables (v2 §6)
+
+```sql
+-- Event store uniqueness guard (from v1, retained)
+-- lives on ledger_events:
+--   UNIQUE(aggregate_id, version)
+
+-- Idempotency keys on every state-changing API call
+CREATE TABLE processed_requests (
+  key                VARCHAR(64) PRIMARY KEY,
+  response_snapshot  JSONB NOT NULL,
+  expires_at         TIMESTAMPTZ NOT NULL
+);
+-- expired rows purged after 24h; a retried call with the same key
+-- replays the original result instead of double-processing
 ```
 
-### `transfers` collection
-```javascript
-{
-  _id: ObjectId,
-  transferId: "uuid",
-  sourceAccountId: "uuid",
-  destinationAccountId: "uuid",
-  amount: 250.00,
-  currency: "USD",
-  status: "COMPLETED",
-  sourceBalanceAfter: 750.00,
-  destinationBalanceAfter: 1250.00,
-  completedAt: "2026-09-26T00:00:00Z"
-}
-```
+Plus on `ledger_events` (see §4 below): the append-only event log with
+`UNIQUE(aggregate_id, version)` — still the ultimate source-of-truth guard even with the
+queue/lock layers; those layers reduce *contention*, this constraint guarantees
+*correctness* even if they somehow failed (v2 §6).
 
-### Query-optimised indexes
-```javascript
-db.statements.createIndex({ accountId: 1, occurredAt: -1 })
-db.statements.createIndex({ accountId: 1, eventType: 1, occurredAt: -1 })
-db.transfers.createIndex({ sourceAccountId: 1, occurredAt: -1 })
-db.transfers.createIndex({ destinationAccountId: 1, occurredAt: -1 })
-db.balances.createIndex({ status: 1, balance: 1 })
-```
+## 4. Account data — hybrid fragmentation (v2 §7)
 
----
+Within each regional shard, account data is split **vertically** (v2 §7.2):
 
-## Consistency Model
-
-| Aspect | Consistency Guarantee | Expected Lag |
+| Fragment | Contents | Why split out |
 |---|---|---|
-| Event store writes | **Strong consistency** (ACID transaction) | 0 ms (committed atomically) |
-| Account Command state | Strong consistency | 0 ms |
-| Read models (MongoDB) | **Eventual consistency** | < 500ms typical; < 2s worst case |
-| Fraud alerts | Near real-time (event-driven) | < 1s typical |
-| Notifications | Async best-effort | < 5s typical |
+| `account_core` | accountId, status, region, openedAt | Small, hot, read on almost every request |
+| `account_pii` | holderName, KYC documents, registration IP, address | Sensitive, infrequently read, candidate for stricter access control/encryption at rest |
+| `ledger_events` | the append-only event log itself | Extremely high write volume, never updated — benefits from being physically isolated from the slower-changing tables above so its I/O pattern doesn't contend with them |
 
-### Convergence Expectations
-- Read model rebuild from event replay: O(n) where n = event count per aggregate
-- For a typical account with ~100 events: < 10ms rebuild time
-- For full read model rebuild (all accounts): minutes, not hours (background job)
+`ledger_events` columns (event-store standard, carried over from v1):
 
-### Read-After-Write Consistency
-- The API Gateway exposes a 200ms read-after-write window for the frontend
-- For critical flows (balance display after transfer), the frontend can poll until convergence
-- Documented in `docs/FEATURES/04-transaction-history-query.md`
+| Column | Type | Notes |
+|---|---|---|
+| `event_id` | UUID PK | |
+| `aggregate_id` | UUID | Account aggregate; `UNIQUE(aggregate_id, version)` |
+| `version` | INT | Optimistic-concurrency version |
+| `event_type` | VARCHAR | e.g. `AccountOpened`, `MoneyDeposited` (see `docs/EVENT_CATALOG.md`) |
+| `payload` | JSONB | Event body |
+| `region` | VARCHAR | `APAC` \| `EU` \| `AMER` — **horizontal sharding key** (v2 §7.1) |
+| `occurred_at` | TIMESTAMPTZ | |
+
+## 5. Trust Score table
+
+Trust Score Service maintains (v2 §3.6):
+
+| Column | Type | Notes |
+|---|---|---|
+| `account_id` | UUID PK | |
+| `score` | INT | 0–100 |
+| `tier` | SMALLINT | 0=Low (0–40), 1=Medium (41–70), 2=High (71–90), 3=Excellent (91–100) |
+| `last_changed_at` | TIMESTAMPTZ | Last `TrustScoreChanged` |
+
+## 6. Read model (MongoDB / FerretDB)
+
+Ledger Query Service projects account events into document collections
+(`accounts`, `transactions`). Engine choice — MongoDB vs. FerretDB vs. Postgres JSONB —
+is an open decision: see `docs/OPEN_DECISIONS.md`.
+
+## 7. ShardingSphere sharding rule config (v2 §7.1)
+
+```yaml
+rules:
+  - !SHARDING
+    tables:
+      ledger_events:
+        actualDataNodes: ds_${region}.ledger_events
+        databaseStrategy:
+          standard:
+            shardingColumn: region
+            shardingAlgorithmName: region-inline
+    shardingAlgorithms:
+      region-inline:
+        type: INLINE
+        props:
+          algorithm-expression: ds_${region}
+```
+
+Application code writes `INSERT INTO ledger_events ...` against a *logical* table;
+ShardingSphere transparently routes each row to `ds_apac`, `ds_eu`, or `ds_amer`
+(**fragmentation transparency**, v2 §7.1). Physical data sources:
+
+| Datasource | Database | Contents |
+|---|---|---|
+| `ds_apac` | `ddbs_apac` | `account_core`, `account_pii`, `ledger_events` (APAC rows) |
+| `ds_eu` | `ddbs_eu` | same schema, EU rows |
+| `ds_amer` | `ddbs_amer` | same schema, AMER rows |
+
+Loan Service tables (`admin_pool`, `loan_requests`), `reservations`, and
+`processed_requests` are **not sharded** — they are single-database operational tables
+owned by their respective services.
+
+## 8. Event-store projection map
+
+| Store | Written by | Consumed by |
+|---|---|---|
+| `ledger_events` (sharded) | Account Command Service | Ledger Query (replay/recovery), all consumers via Kafka |
+| `admin_pool`, `loan_requests` | Loan Service | Loan Service |
+| `reservations` | Payment & Reservation Service | Payment & Reservation Service |
+| `processed_requests` | every state-changing API service | same service |
+| `trust_scores` | Trust Score Service | Loan Service (via `TrustScoreChanged` → local cache) |
+| MongoDB/FerretDB read model | Ledger Query Service | Ledger Query Service HTTP surface |

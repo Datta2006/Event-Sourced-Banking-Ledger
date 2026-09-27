@@ -6,10 +6,25 @@
     <parent>
         <groupId>edu.cs465</groupId>
         <artifactId>ddbs-ledger</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.2.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>fraud-detection-service</artifactId>
     <name>Fraud Detection Service</name>
-    <description>Subscribes to live event stream, applies rules/heuristics to flag anomalous patterns, emits fraud alerts</description>
+    <description>Consumes account and payment events from Kafka and evaluates fraud rules (carried over from v1, lowest-risk consumer; v2 §9 step 7).</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+    </dependencies>
 </project>

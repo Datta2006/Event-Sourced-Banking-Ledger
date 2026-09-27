@@ -10,8 +10,35 @@ spring:
         locator:
           enabled: true
           lower-case-service-id: true
-    config:
-      import: optional:configserver:http://localhost:8888
+      routes:
+        - id: account-command
+          uri: lb://account-command-service
+          predicates:
+            - Path=/api/accounts/**
+        - id: ledger-query
+          uri: lb://ledger-query-service
+          predicates:
+            - Path=/api/transactions/**,/api/accounts/*/events
+        - id: loans
+          uri: lb://loan-service
+          predicates:
+            - Path=/api/loans/**
+        - id: reservations
+          uri: lb://payment-reservation-service
+          predicates:
+            - Path=/api/reservations/**
+        - id: trust-score
+          uri: lb://trust-score-service
+          predicates:
+            - Path=/api/trust-score/**
+        - id: fraud
+          uri: lb://fraud-detection-service
+          predicates:
+            - Path=/api/fraud/**
+        - id: notifications
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/notifications/**
 
 eureka:
   client:
@@ -19,3 +46,10 @@ eureka:
       defaultZone: http://localhost:8761/eureka/
     fetch-registry: true
     register-with-eureka: true
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      account-command:
+        sliding-window-size: 10
+        failure-rate-threshold: 50

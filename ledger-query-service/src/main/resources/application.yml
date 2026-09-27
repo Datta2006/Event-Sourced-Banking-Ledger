@@ -4,11 +4,22 @@ server:
 spring:
   application:
     name: ledger-query-service
+  # Read-model store: MongoDB wire-compatible; swap URI to FerretDB (ferretdb:27017)
+  # without code changes if the team picks the Apache-2.0 option (docs/OPEN_DECISIONS.md).
   data:
     mongodb:
       uri: mongodb://localhost:27017/ddbs
+  # v2 §7: ShardingSphere Driver for region-sharded ledger_events reads (replay/recovery).
+  # Config file to be added when the fragmentation retrofit lands (v2 §9, step 6).
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ddbs
+    username: ddbs
+    password: ddbs
   kafka:
     bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
     consumer:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer

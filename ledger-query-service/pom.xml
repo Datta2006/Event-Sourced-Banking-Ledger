@@ -6,10 +6,39 @@
     <parent>
         <groupId>edu.cs465</groupId>
         <artifactId>ddbs-ledger</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.2.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>ledger-query-service</artifactId>
     <name>Ledger Query Service</name>
-    <description>Consumes event stream, maintains denormalized read models in MongoDB, serves fast queries for balances/statements/history</description>
+    <description>Consumes account events from Kafka and maintains the read model (MongoDB, with FerretDB/Postgres-JSONB as the open-license swap — see docs/OPEN_DECISIONS.md). Reads the region-sharded ledger via ShardingSphere-JDBC for replay and recovery (v2 §7).</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
+        </dependency>
+        <!-- v2 §7: reads the region-sharded ledger_events through ShardingSphere-JDBC -->
+        <dependency>
+            <groupId>org.apache.shardingsphere</groupId>
+            <artifactId>shardingsphere-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+    </dependencies>
 </project>

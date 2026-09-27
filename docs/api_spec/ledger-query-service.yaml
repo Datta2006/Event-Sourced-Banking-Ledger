@@ -1,101 +1,32 @@
 openapi: 3.0.3
 info:
   title: Ledger Query Service API
-  version: 1.0.0
-  description: |
-    Provides read-optimized queries over denormalised MongoDB models.
-    All endpoints are synchronous for fast frontend consumption.
-
-servers:
-  - url: http://localhost:8082/api
-    description: Local development
-
+  version: 0.3.0
+  description: >
+    Read side (v2 §2). Maintains the MongoDB/FerretDB read model from account events
+    and serves transaction history. Also reads the region-sharded ledger_events via
+    ShardingSphere-JDBC for replay and recovery (v2 §7).
 paths:
-  /ledger/accounts/{accountId}/balance:
+  /api/transactions:
     get:
-      summary: Get current balance for an account
-      operationId: getBalance
-      tags:
-        - Balances
+      summary: Query transaction history
+      operationId: listTransactions
       parameters:
         - name: accountId
-          in: path
-          required: true
+          in: query
           schema:
             type: string
             format: uuid
-      responses:
-        '200':
-          description: Current balance
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BalanceResponse'
-        '404':
-          description: Account not found
-
-  /ledger/accounts/{accountId}/statements:
-    get:
-      summary: Get paginated transaction history for an account
-      operationId: getStatements
-      tags:
-        - Statements
-      parameters:
-        - name: accountId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 0
-        - name: size
-          in: query
-          schema:
-            type: integer
-            default: 20
-            maximum: 100
-        - name: fromDate
+        - name: from
           in: query
           schema:
             type: string
             format: date-time
-        - name: toDate
+        - name: to
           in: query
           schema:
             type: string
             format: date-time
-        - name: type
-          in: query
-          schema:
-            type: string
-            enum: [DEPOSIT, WITHDRAWAL, TRANSFER_IN, TRANSFER_OUT]
-      responses:
-        '200':
-          description: Paginated statements
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StatementsResponse'
-        '404':
-          description: Account not found
-
-  /ledger/accounts/{accountId}/transactions:
-    get:
-      summary: Get all transactions across an account (paginated)
-      operationId: getTransactions
-      tags:
-        - Transactions
-      parameters:
-        - name: accountId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
         - name: page
           in: query
           schema:
@@ -108,140 +39,139 @@ paths:
             default: 50
       responses:
         '200':
-          description: All transactions for account
+          description: Page of transactions from the read model
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransactionsResponse'
-
-  /ledger/accounts:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TransactionView'
+  /api/accounts:
     get:
-      summary: List all accounts (for admin/audit views)
+      summary: List accounts (read model)
+      description: >
+        Read-model view of all accounts maintained from account events (v2 §2).
+        Added for the ops/dashboard UI; balances trail the write side until the
+        event is consumed.
       operationId: listAccounts
-      tags:
-        - Accounts
-      parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 0
-        - name: size
-          in: query
-          schema:
-            type: integer
-            default: 20
       responses:
         '200':
-          description: List of accounts
+          description: All known accounts
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  accounts:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AccountSummary'
-                  total:
-                    type: integer
-                  page:
-                    type: integer
-                  size:
-                    type: integer
-
+                type: array
+                items:
+                  $ref: '#/components/schemas/AccountSummaryView'
+  /api/events:
+    get:
+      summary: List recent events across all aggregates
+      description: >
+        Global event feed for the dashboard live stream — polled with `since` for
+        incremental delivery. Ordered newest-first; served from the read model.
+      operationId: listRecentEvents
+      parameters:
+        - name: since
+          in: query
+          description: Only events with occurredAt strictly after this instant.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: Recent events, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventView'
+  /api/accounts/{accountId}/events:
+    get:
+      summary: List events for an account
+      description: Served from the region-sharded ledger_events store (v2 §7).
+      operationId: listAccountEvents
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ordered event list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventView'
 components:
   schemas:
-    BalanceResponse:
+    TransactionView:
       type: object
       properties:
+        transactionId:
+          type: string
+          format: uuid
         accountId:
           type: string
           format: uuid
-        balance:
-          type: number
-          format: decimal
-        currency:
+        type:
           type: string
-        lastUpdated:
-          type: string
-          format: date-time
-
-    StatementsResponse:
-      type: object
-      properties:
-        accountId:
-          type: string
-          format: uuid
-        totalElements:
-          type: integer
-        page:
-          type: integer
-        size:
-          type: integer
-        statements:
-          type: array
-          items:
-            $ref: '#/components/schemas/StatementEntry'
-
-    StatementEntry:
-      type: object
-      properties:
-        eventType:
-          type: string
+          enum: [DEPOSIT, WITHDRAWAL, TRANSFER_IN, TRANSFER_OUT, RESERVATION, CAPTURE, RELEASE, LOAN_DISBURSEMENT, LOAN_REPAYMENT]
         amount:
           type: number
-          format: decimal
-        balanceAfter:
-          type: number
-          format: decimal
+          format: double
         occurredAt:
           type: string
           format: date-time
-        reference:
-          type: string
-
-    TransactionsResponse:
+    EventView:
       type: object
       properties:
-        accountId:
+        eventId:
           type: string
           format: uuid
-        transactions:
-          type: array
-          items:
-            $ref: '#/components/schemas/TransactionEntry'
-        totalElements:
+        aggregateId:
+          type: string
+          format: uuid
+        version:
           type: integer
-
-    TransactionEntry:
-      type: object
-      properties:
-        eventType:
+        type:
           type: string
-        amount:
-          type: number
-          format: decimal
-        counterpartyAccountId:
-          type: string
-          format: uuid
+        payload:
+          type: object
+          additionalProperties: true
         occurredAt:
           type: string
           format: date-time
-
-    AccountSummary:
+        region:
+          type: string
+          enum: [APAC, EU, AMER]
+    AccountSummaryView:
       type: object
       properties:
         accountId:
           type: string
           format: uuid
-        accountHolderName:
+        holderName:
           type: string
-        balance:
+        region:
+          type: string
+          enum: [APAC, EU, AMER]
+        availableBalance:
           type: number
-          format: decimal
-        currency:
+          format: double
+        reservedBalance:
+          type: number
+          format: double
+        updatedAt:
           type: string
-        status:
-          type: string
-          enum: [OPEN, CLOSED]
+          format: date-time

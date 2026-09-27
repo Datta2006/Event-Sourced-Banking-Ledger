@@ -1,66 +1,41 @@
 openapi: 3.0.3
 info:
   title: Fraud Detection Service API
-  version: 1.0.0
-  description: |
-    Subscribes to the live event stream, applies rules/heuristics,
-    and exposes fraud alerts and rule configuration.
-
-servers:
-  - url: http://localhost:8083/api
-    description: Local development
-
+  version: 0.2.0
+  description: >
+    Carried over from v1 (v2 §2, §9 step 7). Consumes account and payment events
+    from Kafka and evaluates fraud rules. Read-only HTTP surface for flagged cases.
 paths:
-  /fraud/alerts:
+  /api/fraud/cases:
     get:
-      summary: List all active fraud alerts
-      operationId: listAlerts
-      tags:
-        - Alerts
+      summary: List flagged fraud cases
+      operationId: listFraudCases
       parameters:
         - name: accountId
           in: query
           schema:
             type: string
             format: uuid
-        - name: severity
+        - name: status
           in: query
           schema:
             type: string
-            enum: [LOW, MEDIUM, HIGH, CRITICAL]
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 0
-        - name: size
-          in: query
-          schema:
-            type: integer
-            default: 20
+            enum: [OPEN, REVIEWED, DISMISSED]
       responses:
         '200':
-          description: List of fraud alerts
+          description: Flagged cases
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  alerts:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/FraudAlert'
-                  total:
-                    type: integer
-
-  /fraud/alerts/{alertId}:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FraudCase'
+  /api/fraud/cases/{caseId}:
     get:
-      summary: Get a specific fraud alert
-      operationId: getAlert
-      tags:
-        - Alerts
+      summary: Get a flagged fraud case
+      operationId: getFraudCase
       parameters:
-        - name: alertId
+        - name: caseId
           in: path
           required: true
           schema:
@@ -68,133 +43,33 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Fraud alert details
+          description: Case detail
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FraudAlert'
+                $ref: '#/components/schemas/FraudCase'
         '404':
-          description: Alert not found
-
-  /fraud/alerts/{alertId}/clear:
-    post:
-      summary: Clear a fraud flag
-      operationId: clearAlert
-      tags:
-        - Alerts
-      parameters:
-        - name: alertId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Alert cleared
-        '404':
-          description: Alert not found
-
-  /fraud/rules:
-    get:
-      summary: List active fraud detection rules
-      operationId: listRules
-      tags:
-        - Rules
-      responses:
-        '200':
-          description: List of active rules
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  rules:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/FraudRule'
-
-  /fraud/rules:
-    post:
-      summary: Create or update a fraud rule (admin)
-      operationId: createRule
-      tags:
-        - Rules
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/FraudRuleInput'
-      responses:
-        '201':
-          description: Rule created
-        '400':
-          description: Invalid rule configuration
-
+          description: Case not found
 components:
   schemas:
-    FraudAlert:
+    FraudCase:
       type: object
       properties:
-        flagId:
+        caseId:
           type: string
           format: uuid
         accountId:
           type: string
           format: uuid
-        transferId:
-          type: string
-          format: uuid
-        severity:
-          type: string
-          enum: [LOW, MEDIUM, HIGH, CRITICAL]
         rule:
           type: string
-        description:
+          description: Fraud rule that fired (carried over from v1 rules)
+        triggeredByEvent:
           type: string
-        raisedAt:
-          type: string
-          format: date-time
+          description: Event type from account.events / payment.events that triggered the case
         status:
           type: string
-          enum: [ACTIVE, CLEARED]
-
-    FraudRule:
-      type: object
-      properties:
-        ruleId:
+          enum: [OPEN, REVIEWED, DISMISSED]
+        flaggedAt:
           type: string
-        name:
-          type: string
-        description:
-          type: string
-        severity:
-          type: string
-        enabled:
-          type: boolean
-        threshold:
-          type: number
-        timeWindowMinutes:
-          type: integer
-
-    FraudRuleInput:
-      type: object
-      required:
-        - name
-        - severity
-      properties:
-        name:
-          type: string
-        description:
-          type: string
-        severity:
-          type: string
-          enum: [LOW, MEDIUM, HIGH, CRITICAL]
-        threshold:
-          type: number
-        timeWindowMinutes:
-          type: integer
-        enabled:
-          type: boolean
-          default: true
+          format: date-time

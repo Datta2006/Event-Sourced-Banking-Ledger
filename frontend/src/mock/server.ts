@@ -68,10 +68,10 @@ export type ApiShape = {
 
 // ------------------------------------------------------------------ seed data
 const ACCOUNTS: AccountSummary[] = [
-  { accountId: 'a1', holderName: 'Aarav Sharma', region: 'APAC', availableBalance: 48250.5, reservedBalance: 2000, status: 'ACTIVE', kycStatus: 'VERIFIED', updatedAt: now() },
-  { accountId: 'b2', holderName: 'Meera Iyer', region: 'EU', availableBalance: 12980.25, reservedBalance: 0, status: 'ACTIVE', kycStatus: 'VERIFIED', updatedAt: now() },
-  { accountId: 'c3', holderName: 'Dmitri Volkov', region: 'AMER', availableBalance: 73400, reservedBalance: 1500, status: 'ACTIVE', kycStatus: 'PENDING', updatedAt: now() },
-  { accountId: 'd4', holderName: 'Lucia Fernandez', region: 'EU', availableBalance: 9210.75, reservedBalance: 0, status: 'ACTIVE', kycStatus: 'REJECTED', updatedAt: now() },
+  { accountId: 'a1', holderName: 'Raju Reddy', region: 'APAC', availableBalance: 48250.5, reservedBalance: 2000, status: 'ACTIVE', kycStatus: 'VERIFIED', updatedAt: now() },
+  { accountId: 'b2', holderName: 'Shreyas Iyer', region: 'EU', availableBalance: 12980.25, reservedBalance: 0, status: 'ACTIVE', kycStatus: 'VERIFIED', updatedAt: now() },
+  { accountId: 'c3', holderName: 'Ankit Sharma', region: 'AMER', availableBalance: 73400, reservedBalance: 1500, status: 'ACTIVE', kycStatus: 'PENDING', updatedAt: now() },
+  { accountId: 'd4', holderName: 'Chandan Kumar', region: 'EU', availableBalance: 9210.75, reservedBalance: 0, status: 'ACTIVE', kycStatus: 'REJECTED', updatedAt: now() },
 ];
 
 const TRUST: Record<string, TrustScoreView> = {

@@ -8,48 +8,66 @@ spring:
     gateway:
       discovery:
         locator:
-          enabled: true
-          lower-case-service-id: true
+          enabled: false
+      # The frontend calls /api/<segment>/... — strip the /api prefix, then
+      # route by the next segment to the owning service (lb:// = Eureka).
       routes:
         - id: account-command
           uri: lb://account-command-service
           predicates:
-            - Path=/api/accounts/**
+            - Path=/api/accounts/**,/api/transfers/**
+          filters:
+            - StripPrefix=1
         - id: ledger-query
           uri: lb://ledger-query-service
           predicates:
-            - Path=/api/transactions/**,/api/accounts/*/events
-        - id: loans
+            - Path=/api/ledger/**,/api/events/**,/api/transactions/**
+          filters:
+            - StripPrefix=1
+        - id: loan
           uri: lb://loan-service
           predicates:
             - Path=/api/loans/**
-        - id: reservations
+          filters:
+            - StripPrefix=1
+        - id: payment-reservation
           uri: lb://payment-reservation-service
           predicates:
             - Path=/api/reservations/**
+          filters:
+            - StripPrefix=1
         - id: trust-score
           uri: lb://trust-score-service
           predicates:
             - Path=/api/trust-score/**
+          filters:
+            - StripPrefix=1
         - id: fraud
           uri: lb://fraud-detection-service
           predicates:
             - Path=/api/fraud/**
-        - id: notifications
+          filters:
+            - StripPrefix=1
+        - id: notification
           uri: lb://notification-service
           predicates:
             - Path=/api/notifications/**
+          filters:
+            - StripPrefix=1
 
 eureka:
   client:
     service-url:
-      defaultZone: http://localhost:8761/eureka/
+      defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
+    register-with-eureka: false
     fetch-registry: true
-    register-with-eureka: true
 
-resilience4j:
-  circuitbreaker:
-    instances:
-      account-command:
-        sliding-window-size: 10
-        failure-rate-threshold: 50
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,gateway
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO

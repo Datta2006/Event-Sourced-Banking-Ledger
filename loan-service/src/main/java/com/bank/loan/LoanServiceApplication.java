@@ -2,6 +2,7 @@ package com.bank.loan;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Loan Service (v2).
@@ -12,10 +13,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * {@code admin_pool:balance}: success → LoanApproved → LoanDisbursed;
  * failure → WAITING_FOR_FUNDS until AdminPoolReplenished
  * (HLD_LLD_SystemDesign_v2.md §3).
- *
- * Scaffolding only — no business logic yet.
  */
 @SpringBootApplication
+@EnableScheduling
 public class LoanServiceApplication {
     public static void main(String[] args) {
         SpringApplication.run(LoanServiceApplication.class, args);

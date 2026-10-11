@@ -1,0 +1,4 @@
+Manifest-Version: 1.0
+Main-Class: com.bank.infra.eureka.EurekaServerApplication
+Created-By: 26.0.2 (Oracle Corporation)
+

@@ -2,17 +2,21 @@ server:
   port: 8082
 
 spring:
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: ledger-query-service
   # Read-model store: MongoDB wire-compatible; swap URI to FerretDB (ferretdb:27017)
   # without code changes if the team picks the Apache-2.0 option (docs/OPEN_DECISIONS.md).
   data:
     mongodb:
-      uri: mongodb://localhost:27017/ddbs
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/ddbs}
   # v2 §7: ShardingSphere Driver for region-sharded ledger_events reads (replay/recovery).
   # Config file to be added when the fragmentation retrofit lands (v2 §9, step 6).
+  # Direct Postgres read for replay/recovery — ShardingSphere retrofit comes later
+  # (v2 §9 step 6). Schema owned by account-command-service; no Flyway here.
   datasource:
-    url: jdbc:postgresql://localhost:5432/ddbs
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/ledger}
     username: ddbs
     password: ddbs
   kafka:
@@ -30,6 +34,11 @@ spring:
 eureka:
   client:
     service-url:
-      defaultZone: http://localhost:8761/eureka/
+      defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+
+management:
+  endpoint:
+    health:
+      show-details: always   # expose mongo/db/kafka indicators for compose healthcheck + CI

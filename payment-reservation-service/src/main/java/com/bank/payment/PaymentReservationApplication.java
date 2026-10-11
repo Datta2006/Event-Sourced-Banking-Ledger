@@ -2,6 +2,7 @@ package com.bank.payment;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Payment &amp; Reservation Service (v2).
@@ -12,10 +13,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * Nimbus JOSE+JWT signed offline token; first capture by reservationId wins
  * (FundsCaptured), uninvoked holds expire via FundsReleased
  * (HLD_LLD_SystemDesign_v2.md §4).
- *
- * Scaffolding only — no business logic yet.
  */
 @SpringBootApplication
+@EnableScheduling
 public class PaymentReservationApplication {
     public static void main(String[] args) {
         SpringApplication.run(PaymentReservationApplication.class, args);

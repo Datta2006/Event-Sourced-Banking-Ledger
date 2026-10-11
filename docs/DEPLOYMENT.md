@@ -1,10 +1,11 @@
 # Deployment (v2)
 
 > **Source of truth:** `HLD_LLD_SystemDesign_v2.md`. The root `docker-compose.yml` is the
-> working local demo: **Valkey** replaces Redis (license, v2 §0), Kafka runs in KRaft
-> mode (no Zookeeper), and Postgres is split into **3 region shards** — enough to prove
-> the fragmentation concept, deliberately not exhaustive (v2 §7). MongoDB is kept with
-> **FerretDB** noted as the OSI-clean swap (see `docs/OPEN_DECISIONS.md`).
+> working local demo: **Valkey** replaces Redis (license, v2 §0) and Kafka runs in KRaft
+> mode (no Zookeeper). Per `docs/adr/ADR-002`, the storage slice runs a **single
+> Postgres instance with one schema per data-owning service**; the 3-shard region split
+> (v2 §7) is deferred until the schema is stable (v2 §9 step 6). The read model is
+> **FerretDB** (Apache-2.0, MongoDB wire-compatible — `docs/adr/ADR-001`).
 
 ---
 
@@ -27,14 +28,18 @@ graph TB
         CFG[config-server :8888]
         KAFKA[(kafka :9092<br/>KRaft, no zookeeper)]
         VAL[(valkey :6379)]
-        PG1[(postgres-apac :5433<br/>ddbs_apac)]
-        PG2[(postgres-eu :5434<br/>ddbs_eu)]
-        PG3[(postgres-amer :5435<br/>ddbs_amer)]
-        MONGO[(mongo :27017)]
+        PG[(postgres :5433<br/>db ledger — one schema per service)]
+        FPG[(ferretdb-postgres<br/>DocumentDB backend)]
+        FRDB[(ferretdb :27017<br/>read model)]
         MH[mailhog :8025/:1025]
     end
-    CMD -.->|ShardingSphere routes<br/>by region| PG1 & PG2 & PG3
-    QRY -.->|ShardingSphere reads<br/>for replay| PG1 & PG2 & PG3
+    CMD --> PG
+    LOAN --> PG
+    PAY --> PG
+    TRUST --> PG
+    QRY --> PG
+    QRY --> FRDB
+    FPG --> FRDB
     LOAN --> VAL
     PAY --> VAL
     CMD --> VAL
@@ -42,7 +47,6 @@ graph TB
     LOAN --> KAFKA
     PAY --> KAFKA
     KAFKA --> QRY & TRUST & FRD & NTF
-    QRY --> MONGO
     NTF --> MH
     GW --> CMD & QRY & LOAN & PAY & TRUST & FRD & NTF
 ```
@@ -54,11 +58,11 @@ graph TB
 | `eureka-server` | `ddbs-eureka-server:0.2.0` | 8761 | Service discovery |
 | `config-server` | `ddbs-config-server:0.2.0` | 8888 | Spring Cloud Config (mounts `./infra/config-repo`) |
 | `valkey` | `valkey/valkey:8.1` | 6379 | Redisson backend: `loan:queue` RScoredSortedSet, `admin_pool:balance` Lua debit, `RFairLock` per account |
-| `kafka` | `bitnami/kafka:3.7` (KRaft) | 9092 | Event streaming + partition-per-account command ordering |
-| `postgres-apac` | `postgres:16-alpine` | 5433 | Shard `ds_apac` (db `ddbs_apac`) |
-| `postgres-eu` | `postgres:16-alpine` | 5434 | Shard `ds_eu` (db `ddbs_eu`) |
-| `postgres-amer` | `postgres:16-alpine` | 5435 | Shard `ds_amer` (db `ddbs_amer`) |
-| `mongo` | `mongo:7.0` | 27017 | Read model (FerretDB drop-in if chosen) |
+| `kafka` | `apache/kafka:3.7.2` (KRaft) | 9092 / 29092 | Event streaming + partition-per-account command ordering (official image; bitnami/kafka:3.7 was retired from Docker Hub) |
+| `kafka-init` | `apache/kafka:3.7.2` | — | One-shot topic creation for the 5 topics in `EVENT_CATALOG.md` |
+| `postgres` | `postgres:16-alpine` | 5433 | db `ledger` — schemas `account_command` / `loan` / `payment` / `trust_score` (ADR-002) |
+| `ferretdb` | `ghcr.io/ferretdb/ferretdb:2.7.0` | 27017 | Read model (ADR-001) |
+| `ferretdb-postgres` | `ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0` | — | FerretDB's DocumentDB storage backend |
 | `mailhog` | `mailhog/mailhog` | 8025 / 1025 | Fake SMTP UI for notifications |
 | 8 service containers | `ddbs-*:0.2.0` | 8080–8087 | See `docs/ARCHITECTURE.md` §3 |
 
@@ -66,7 +70,7 @@ graph TB
 
 ```bash
 # build everything first (services + the two infra modules)
-./mvnw -DskipTests package
+mvn -DskipTests package
 
 # start infrastructure, then services (compose handles depends_on ordering)
 docker compose up -d
@@ -80,23 +84,24 @@ open http://localhost:8025          # MailHog UI (notifications)
 tolerate the broker/stores being briefly unavailable at boot (scaffolding note: wiring
 readiness probes is implementation-stage work).
 
-## 4. Sharding bootstrap (manual, implementation stage)
+## 4. Sharding bootstrap (deferred — see ADR-002)
 
-The three shard databases start empty. When the fragmentation retrofit lands (v2 §9
-step 6), a bootstrap script creates the vertical-split schema
-(`account_core`, `account_pii`, `ledger_events`) on **each** shard and seeds
-ShardingSphere's datasource map (`ds_apac`, `ds_eu`, `ds_amer`). Until then the services
-point at a single default shard URL so early debugging stays simple (v2 §9 step 6:
-"don't do this first, it complicates early debugging").
+The storage slice runs a **single Postgres instance** with one Flyway-managed schema per
+data-owning service (`account_command`, `loan`, `payment`, `trust_score`); migrations run
+automatically at service boot. When the fragmentation retrofit lands (v2 §9 step 6), a
+bootstrap script will create the vertical-split schema (`account_core`, `account_pii`,
+`ledger_events`) on **each** regional shard and seed ShardingSphere's datasource map
+(`ds_apac`, `ds_eu`, `ds_amer`) — deliberately not built now so early debugging stays
+simple (v2 §9 step 6: "don't do this first, it complicates early debugging").
 
 ## 5. Environment variables (per service)
 
 | Variable | Consumed by | Meaning |
 |---|---|---|
-| `SPRING_KAFKA_BOOTSTRAP_SERVERS` | all | Kafka bootstrap (container-internal `kafka:9092`) |
-| `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD` | data-owning services | Default shard JDBC URL (ShardingSphere overrides routing per region once enabled) |
+| `SPRING_KAFKA_BOOTSTRAP_SERVERS` | all | Kafka bootstrap (container-internal `kafka:9092`; host clients use `localhost:29092`) |
+| `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD` | data-owning services | JDBC URL of the single `ledger` database (per-region shard URLs once ShardingSphere lands) |
 | `SPRING_DATA_REDIS_HOST`, `REDISSON_ADDRESS` | account-command, loan, payment-reservation | Valkey location for Redisson |
-| `SPRING_DATA_MONGODB_URI` | ledger-query | Read-model store (swap host to `ferretdb:27017` with zero code change) |
+| `SPRING_DATA_MONGODB_URI` | ledger-query | Read-model store — FerretDB (`ferretdb:27017`; MongoDB stays a URI swap away, ADR-001) |
 | `SPRING_MAIL_HOST`, `SPRING_MAIL_PORT` | notification | MailHog SMTP |
 | `EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE` | all | Discovery |
 

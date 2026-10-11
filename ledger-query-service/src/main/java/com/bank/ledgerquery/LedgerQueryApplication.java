@@ -10,8 +10,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * swap in FerretDB or Postgres JSONB — see docs/OPEN_DECISIONS.md). Reads
  * ledger_events through ShardingSphere-JDBC for replay and recovery
  * (HLD_LLD_SystemDesign_v2.md §2, §7).
- *
- * Scaffolding only — no business logic yet.
  */
 @SpringBootApplication
 public class LedgerQueryApplication {

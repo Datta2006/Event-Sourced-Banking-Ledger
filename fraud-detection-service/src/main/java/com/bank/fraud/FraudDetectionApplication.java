@@ -8,8 +8,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * Consumes account and payment events from Kafka and evaluates fraud rules
  * (HLD_LLD_SystemDesign_v2.md §2, §9 step 7).
- *
- * Scaffolding only — no business logic yet.
  */
 @SpringBootApplication
 public class FraudDetectionApplication {

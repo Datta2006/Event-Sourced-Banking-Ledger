@@ -1,0 +1,466 @@
+# Event-Sourced Banking Ledger (v2) — local demo topology
+# See docs/DEPLOYMENT.md and HLD_LLD_SystemDesign_v2.md (source of truth).
+#
+# Storage-layer slice (v2 §9 step 1 + rebuild brief):
+#   - ONE Postgres instance ("postgres") hosting one SCHEMA per data-owning service
+#     (account_command / loan / payment / trust_score). The 3-shard region split
+#     (v2 §7, FRAGMENTATION_DESIGN.md) is deliberately deferred until the schema is
+#     stable — ShardingSphere retrofit comes later (v2 §9 step 6).
+#   - Read model = FerretDB 2.8 (Apache-2.0, MongoDB wire-compatible — ADR-002,
+#     resolves docs/OPEN_DECISIONS.md #1). MongoDB Community remains the
+#     swap-in-the-other-direction; ledger-query-service needs zero code change
+#     (same spring-boot-starter-data-mongodb, URI swap only).
+#   - Kafka in KRaft mode (no Zookeeper), Valkey (BSD) instead of Redis (SSPL).
+#   - Every container has a healthcheck so scripts/CI can `docker compose up --wait`.
+
+x-java-service: &java-service
+  networks:
+    - ddbs-network
+  restart: unless-stopped
+
+services:
+  # ================= Infrastructure =================
+
+  # --- Service Discovery ---
+  eureka-server:
+    <<: *java-service
+    image: ddbs-eureka-server:0.2.0
+    build:
+      context: .
+      dockerfile: infra/eureka/Dockerfile
+    ports:
+      - "8761:8761"
+    environment:
+      - EUREKA_CLIENT_REGISTER_WITH_EUREKA=false
+      - EUREKA_CLIENT_FETCH_REGISTRY=false
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks:
+      - ddbs-network
+
+  # --- Centralized Config ---
+  config-server:
+    <<: *java-service
+    image: ddbs-config-server:0.2.0
+    build:
+      context: .
+      dockerfile: infra/config/Dockerfile
+    ports:
+      - "8888:8888"
+    environment:
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=file:///tmp/ddbs-config-repo
+    volumes:
+      - ./infra/config-repo:/tmp/ddbs-config-repo:ro
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8888/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks:
+      - ddbs-network
+
+  # --- Valkey (Redisson backend: loan priority queue, admin pool Lua debit, RFairLock) ---
+  valkey:
+    image: valkey/valkey:8.1
+    ports:
+      - "6379:6379"
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - ddbs-valkey-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - ddbs-network
+
+  # --- Kafka (partition-per-account ordering + event streaming; KRaft, no Zookeeper) ---
+  # Official apache/kafka image (Apache-2.0) — replaces the retired bitnami/kafka:3.7
+  # tag. Note the official image's env style: KAFKA_<dotted.property.uppercased>.
+  # No volume for this slice: dev-throwable broker state; topics are (re)created by
+  # kafka-init on every `compose up` and auto-create stays on as backstop.
+  kafka:
+    image: apache/kafka:3.7.2
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_DEFAULT_REPLICATION_FACTOR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    networks:
+      - ddbs-network
+
+  # --- Kafka topics (dev convenience only; auto-create stays on as backstop) ---
+  kafka-init:
+    image: apache/kafka:3.7.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic account.commands --partitions 3
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic account.events   --partitions 3
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic loan.events      --partitions 3
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.events   --partitions 3
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic trust-score.events --partitions 3
+        echo "ddbs topics ready"
+    networks:
+      - ddbs-network
+
+  # --- PostgreSQL (single instance for now; one schema per data-owning service) ---
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ledger
+      POSTGRES_USER: ddbs
+      POSTGRES_PASSWORD: ddbs
+    volumes:
+      - ddbs-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ddbs -d ledger"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - ddbs-network
+
+  # --- FerretDB read model (Apache-2.0; ADR-002) ---
+  # Postgres-with-DocumentDB backend (stores the BSON data), then FerretDB itself.
+  # 2.7.0 + DocumentDB 0.107.0 is the latest matched pair published on GHCR.
+  ferretdb-postgres:
+    image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
+    environment:
+      POSTGRES_USER: ddbs
+      POSTGRES_PASSWORD: ddbs
+      POSTGRES_DB: ddbs
+    volumes:
+      - ddbs-ferretdb-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ddbs -d ddbs"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks:
+      - ddbs-network
+
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb:2.7.0
+    ports:
+      - "27017:27017"
+    environment:
+      - FERRETDB_POSTGRESQL_URL=postgres://ddbs:ddbs@ferretdb-postgres:5432/ddbs
+    depends_on:
+      ferretdb-postgres:
+        condition: service_healthy
+    # image ships its own HEALTHCHECK (readiness probe) — no override needed
+    networks:
+      - ddbs-network
+
+  # --- MailHog (fake SMTP for dev/notifications demo) ---
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - ddbs-network
+
+  # ================= Services =================
+
+  # --- API Gateway ---
+  api-gateway:
+    <<: *java-service
+    image: ddbs-api-gateway:0.2.0
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Account Command Service (owner: ledger_events, account_core, account_pii, processed_requests) ---
+  account-command-service:
+    <<: *java-service
+    image: ddbs-account-command:0.2.0
+    build:
+      context: ./account-command-service
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=valkey
+      - REDISSON_ADDRESS=redis://valkey:6379
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Ledger Query Service (read model in FerretDB; Mongo starter connects unchanged) ---
+  ledger-query-service:
+    <<: *java-service
+    image: ddbs-ledger-query:0.2.0
+    build:
+      context: ./ledger-query-service
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_DATA_MONGODB_URI=mongodb://ddbs:ddbs@ferretdb:27017/ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      ferretdb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Fraud Detection Service (no persistence this slice) ---
+  fraud-detection-service:
+    <<: *java-service
+    image: ddbs-fraud-detection:0.2.0
+    build:
+      context: ./fraud-detection-service
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Notification Service (MailHog SMTP; no persistence this slice) ---
+  notification-service:
+    <<: *java-service
+    image: ddbs-notification:0.2.0
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_MAIL_HOST=mailhog
+      - SPRING_MAIL_PORT=1025
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Loan Service (owner: admin_pool, loan_requests; schema loan) ---
+  loan-service:
+    <<: *java-service
+    image: ddbs-loan:0.2.0
+    build:
+      context: ./loan-service
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=valkey
+      - REDISSON_ADDRESS=redis://valkey:6379
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Payment & Reservation Service (owner: reservations; schema payment) ---
+  payment-reservation-service:
+    <<: *java-service
+    image: ddbs-payment-reservation:0.2.0
+    build:
+      context: ./payment-reservation-service
+      dockerfile: Dockerfile
+    ports:
+      - "8086:8086"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=valkey
+      - REDISSON_ADDRESS=redis://valkey:6379
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Trust Score Service (owner: trust_scores; schema trust_score) ---
+  trust-score-service:
+    <<: *java-service
+    image: ddbs-trust-score:0.2.0
+    build:
+      context: ./trust-score-service
+      dockerfile: Dockerfile
+    ports:
+      - "8087:8087"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger
+      - SPRING_DATASOURCE_USERNAME=ddbs
+      - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8087/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ddbs-network
+
+volumes:
+  ddbs-valkey-data:
+  ddbs-postgres-data:
+  ddbs-ferretdb-pg-data:
+
+networks:
+  ddbs-network:
+    driver: bridge

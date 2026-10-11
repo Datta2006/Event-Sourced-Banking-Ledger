@@ -2,19 +2,28 @@ server:
   port: 8081
 
 spring:
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: account-command-service
   # v2 §7: ShardingSphere Driver routes logical INSERTs into ledger_events to the
   # region shard (ds_apac / ds_eu / ds_amer) selected by the registration-IP region.
   # Config file to be added when the fragmentation retrofit lands (v2 §9, step 6).
   datasource:
-    url: jdbc:postgresql://localhost:5432/ddbs
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/ledger}
     username: ddbs
     password: ddbs
   jpa:
     hibernate:
-      ddl-auto: update
+      # schema is Flyway-managed (db/migration) — validate only, never mutate
+      ddl-auto: validate
     show-sql: false
+  flyway:
+    locations: classpath:db/migration
+    default-schema: account_command
+    schemas: account_command
+    create-schemas: true
+    baseline-on-migrate: true
   # v2 §5: withdrawal commands arrive on a Kafka partition keyed by accountId,
   # so a single consumer instance applies them in broker-received (FCFS) order.
   kafka:
@@ -41,6 +50,11 @@ redisson:
 eureka:
   client:
     service-url:
-      defaultZone: http://localhost:8761/eureka/
+      defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+
+management:
+  endpoint:
+    health:
+      show-details: always   # expose db/kafka/redis indicators for compose healthcheck + CI

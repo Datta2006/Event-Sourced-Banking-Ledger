@@ -72,6 +72,13 @@ CREATE TABLE processed_requests (
 -- replays the original result instead of double-processing
 ```
 
+**Ownership note (2026-10-01, ADR-003):** the doc says "every state-changing API
+service" without a physical owner. Because schemas are not shared across services, the
+identical table is created **per state-changing service** in its own Flyway-managed
+schema: `account_command.processed_requests`, `payment.processed_requests`,
+`trust_score.processed_requests`. Fraud Detection and Notification own none (pure
+consumers in this slice).
+
 Plus on `ledger_events` (see §4 below): the append-only event log with
 `UNIQUE(aggregate_id, version)` — still the ultimate source-of-truth guard even with the
 queue/lock layers; those layers reduce *contention*, this constraint guarantees
@@ -98,6 +105,13 @@ Within each regional shard, account data is split **vertically** (v2 §7.2):
 | `payload` | JSONB | Event body |
 | `region` | VARCHAR | `APAC` \| `EU` \| `AMER` — **horizontal sharding key** (v2 §7.1) |
 | `occurred_at` | TIMESTAMPTZ | |
+
+> **Implementation note (2026-10-01):** the real migration adds explicit `NOT NULL` on
+> `aggregate_id`, `version`, `event_type`, and `payload` (beyond the table above).
+> Without it, PostgreSQL's UNIQUE would treat NULL versions as distinct, silently
+> bypassing the optimistic-concurrency guard of v2 §6. `account_core` and `account_pii`
+> exist as real tables (Flyway, schema `account_command`) pending the ShardingSphere
+> retrofit; see `docs/adr/ADR-002-single-postgres-schema-per-service.md`.
 
 ## 5. Trust Score table
 

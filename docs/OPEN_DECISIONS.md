@@ -17,6 +17,11 @@
 JSONB. **Needed:** an ADR (the v1 repo used `docs/adr/`; none exist yet in the v2 tree)
 recording whichever is chosen.
 
+> **RESOLVED (2026-10-01):** **FerretDB** — see `docs/adr/ADR-001-read-model-store.md`.
+> Compose runs `ghcr.io/ferretdb/ferretdb:2.7.0` + the DocumentDB Postgres backend;
+> `ledger-query-service` keeps `spring-boot-starter-data-mongodb` with a URI swap only.
+> MongoDB remains the swap-in-the-other-direction via `SPRING_DATA_MONGODB_URI`.
+
 ## 2. Commands topic: `account.commands` vs. publishing into `account.events` (v2 §5.2)
 
 v2 §5.2 says withdrawal commands go to "`account.events` (or a dedicated
@@ -30,6 +35,10 @@ v2 §3.6 specifies the score, tiers, and `TrustScoreChanged` — but not the sto
 **Judgment call:** `docs/DATA_MODEL.md` §5 sketches a `trust_scores` table (Postgres)
 behind `trust-score-service`. It could equally be Valkey-only (scores are rebuildable
 from events). Decide when Trust Score Service gets implemented (v2 §9 step 2).
+
+> **RESOLVED FOR THE STORAGE SLICE (2026-10-01):** Postgres `trust_scores` table as
+> sketched in `DATA_MODEL.md` §5, created by Trust Score Service's Flyway migration
+> (schema `trust_score`). Valkey-only remains possible later if the team prefers.
 
 ## 4. `LoanRepaidEarly` event name
 
@@ -96,6 +105,10 @@ Kafka + Redisson/Valkey.
   v2 §2 says nothing about a UI. The compose file references `Dockerfile`s per service —
   those are TODOs at implementation time (only `infra/eureka` and `infra/config` ship
   Dockerfiles now, mirroring v1).
+
+  > **RESOLVED (2026-10-01):** all 8 service modules now ship a `Dockerfile`
+  > (`eclipse-temurin:17-jre-alpine` + built jar), matching the two infra modules.
+  > The frontend remains out of scope.
 - ADRs (`docs/adr/`): v1 had three (Postgres event store, Kafka, orchestration saga).
   All were deleted with the v1 tree. The v2 rebuild brief doesn't list an ADR set, so
   none were recreated; decision #1 above says when to start a fresh ADR log.

@@ -67,6 +67,17 @@ Local demo walkthrough: `docs/DEPLOYMENT.md` §6. API docs: `docs/api_spec/`.
 
 ## Status
 
-**Documentation + scaffolding only** — every service module compiles (build files, empty
-main classes, `application.yml`) but contains no business logic, controller bodies, or
-working queue/lock code yet. Implementation order: `HLD_LLD_SystemDesign_v2.md` §9.
+**Implementation in progress** — multiple services contain substantial business logic beyond scaffolding:
+
+- **Account Command Service**: Implements deposit, withdrawal, and transfer operations with idempotency keys, Redisson `RFairLock` for concurrent access control, event sourcing to PostgreSQL, and Kafka event publishing
+- **Payment & Reservation Service**: Implements funds reservation, capture, and release with idempotency keys, Redisson `RFairLock`, balance management, and signed offline token generation for offline payments
+- **Other services**: Contain varying levels of implementation (API gateway, configuration, service discovery, basic Kafka consumers, etc.)
+
+All service modules compile successfully and demonstrate core distributed systems mechanisms as specified in `HLD_LLD_SystemDesign_v2.md`. Implementation follows the suggested order in section 9 of the design document.
+
+## Next steps
+
+1. Complete implementation of remaining services (Loan Service, Trust Score Service, Fraud Detection Service, Notification Service)
+2. Add comprehensive test suite
+3. Perform ShardingSphere retrofit for horizontal fragmentation (as planned in v2 §9 step 6)
+4. Conduct concurrency and failure testing to validate distributed systems properties

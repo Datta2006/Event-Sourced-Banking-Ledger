@@ -5,7 +5,6 @@ import { moneyINR, time } from '../../lib/format';
 import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
-import { PageHeader } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
 

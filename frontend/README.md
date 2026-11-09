@@ -124,7 +124,7 @@ Run without backend:
 ```bash
 npm run dev
 # Visit http://localhost:5173
-# Click "Fill customer demo" or "Fill bank demo" on login page
+# Click \"Fill customer demo\" or \"Fill bank demo\" on login page
 ```
 
 Run with backend:

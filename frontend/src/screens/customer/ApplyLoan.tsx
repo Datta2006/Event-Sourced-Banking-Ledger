@@ -1,10 +1,8 @@
 import { useState } from 'react';
-import { TIER_NAMES } from '../../api/contract';
-import { Section, ErrorNote } from '../../components/ui';
-import { moneyINR } from '../../lib/format';
+import type { AccountSummary } from '../../api/contract';
+import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
-import { PageHeader, NoAccount, useMe } from './shared';
 import { useTrustTier } from './useTrustTier';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);

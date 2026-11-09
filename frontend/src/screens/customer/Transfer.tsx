@@ -3,12 +3,41 @@ import type { AccountSummary, TransferStatus, TransferStatusView } from '../../a
 import { Section, StatusBadge, ErrorNote } from '../../components/ui';
 import { SpringMoney, SpringProgress } from '../../components/Springs';
 import { moneyINR, shortId, time } from '../../lib/format';
+import type { AccountSummary as AS } from '../../api/contract';
 import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
-import { PageHeader, NoAccount, useMe } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
+
+/** Every customer screen scopes to this account. */
+export function useMe(accountId: string) {
+  return usePoll<AS | undefined>(async () => {
+    const all = await live().listAccounts();
+    return all.find((a) => a.accountId === accountId);
+  }, 2500);
+}
+
+export function PageHeader({ eyebrow, title, sub }: { eyebrow: string; title: string; sub: string }) {
+  return (
+    <header>
+      <div className="eyebrow">{eyebrow}</div>
+      <h1 className="page-title">{title}</h1>
+      <p className="page-sub">{sub}</p>
+    </header>
+  );
+}
+
+export function NoAccount({ accountId }: { accountId: string }) {
+  return (
+    <section className="section">
+      <p style={{ color: 'var(--muted)' }}>
+        Account <span className="mono">{accountId}</span> not found. Pick another
+        account in the sidebar.
+      </p>
+    </section>
+  );
+}
 
 const SAGA_STEPS: { key: TransferStatus; label: string; note: string }[] = [
   { key: 'INITIATED', label: 'Initiated', note: 'TransferInitiated appended' },

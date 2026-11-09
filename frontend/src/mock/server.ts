@@ -67,19 +67,53 @@ export type ApiShape = {
 };
 
 // ------------------------------------------------------------------ seed data
-const ACCOUNTS: AccountSummary[] = [
-  { accountId: 'a1', holderName: 'Raju Reddy', region: 'APAC', availableBalance: 48250.5, reservedBalance: 2000, status: 'ACTIVE', kycStatus: 'VERIFIED', updatedAt: now() },
-  { accountId: 'b2', holderName: 'Shreyas Iyer', region: 'EU', availableBalance: 12980.25, reservedBalance: 0, status: 'ACTIVE', kycStatus: 'VERIFIED', updatedAt: now() },
-  { accountId: 'c3', holderName: 'Ankit Sharma', region: 'AMER', availableBalance: 73400, reservedBalance: 1500, status: 'ACTIVE', kycStatus: 'PENDING', updatedAt: now() },
-  { accountId: 'd4', holderName: 'Chandan Kumar', region: 'EU', availableBalance: 9210.75, reservedBalance: 0, status: 'ACTIVE', kycStatus: 'REJECTED', updatedAt: now() },
+const REGIONS = ['APAC', 'EU', 'AMER'] as const;
+const ACCOUNT_PREFIX = (n: number) => `a${String(n).padStart(2, '0')}`;
+const HOLDER_NAMES = [
+  'Aarav Sharma', 'Raju Reddy', 'Shreyas Iyer', 'Ankit Sharma', 'Chandan Kumar',
+  'Priya Patel', 'Meera Krishnamurthy', 'Ojaswi Nair', 'Farhan Ahmed', 'Sneha Deshpande',
+  'Vikram Rao', 'Neha Bhat', 'Sujata Iyer', 'Ravi Menon', 'Geeta Chaudhary',
+];
+const PURPOSES = [
+  'Home renovation', 'Laptop purchase', 'Debt consolidation', 'Vehicle financing', 'Medical expenses',
+  'Education funding', 'Business expansion', 'Emergency savings', 'Property down payment', 'Family relocation',
+  'Tourism investment', 'Hardware procurement', 'Network expansion', 'App development', 'Partnership setup',
 ];
 
-const TRUST: Record<string, TrustScoreView> = {
-  a1: { accountId: 'a1', score: 94, tier: 3, lastChangedAt: now() },
-  b2: { accountId: 'b2', score: 76, tier: 2, lastChangedAt: now() },
-  c3: { accountId: 'c3', score: 63, tier: 1, lastChangedAt: now() },
-  d4: { accountId: 'd4', score: 22, tier: 0, lastChangedAt: now() },
+const genAccounts = () => {
+  const accounts: AccountSummary[] = [];
+  const byRegion: Record<string, string[]> = { APAC: [], EU: [], AMER: [] };
+  let idx = 0;
+  for (const region of REGIONS) {
+    while (idx < HOLDER_NAMES.length && byRegion[region].length < 12) {
+      const name = HOLDER_NAMES[idx] ?? `Holder ${idx}`;
+      accounts.push({
+        accountId: ACCOUNT_PREFIX(idx + 1),
+        holderName: name,
+        region,
+        availableBalance: Math.round((20000 + Math.random() * 180000) * 100) / 100,
+        reservedBalance: Math.floor(Math.random() * 3000),
+        status: idx % 5 === 4 ? 'CLOSED' : 'ACTIVE',
+        kycStatus: idx % 7 === 6 ? 'REJECTED' : idx % 9 === 6 ? 'PENDING' : 'VERIFIED',
+        updatedAt: now(),
+      });
+      byRegion[region].push(`${idx + 1}`);
+      idx++;
+    }
+  }
+  return accounts;
 };
+
+const ACCOUNTS: AccountSummary[] = genAccounts();
+
+const TRUST: Record<string, TrustScoreView> = Object.fromEntries(
+  ACCOUNTS.map((a) => [`${a.accountId}`, { accountId: a.accountId, score: Math.round(40 + Math.random() * 55), tier: Math.min(3, Math.floor((55 - (a.score ?? 50)) / 18)), lastChangedAt: now() }])
+);
+
+// Fix missing scores from above mapping
+for (const acct of ACCOUNTS) {
+  if (!TRUST[acct.accountId] || !acct.kycStatus) TRUST[acct.accountId] = { accountId: acct.accountId, score: 60, tier: 1, lastChangedAt: now() };
+}
 
 const TRUST_CHANGES: TrustScoreChangeView[] = [];
 
@@ -92,7 +126,7 @@ const FRAUD: FraudCase[] = [];
 const NOTIFICATIONS: NotificationView[] = [];
 const POOL_HISTORY: PoolReplenishmentView[] = [];
 
-let pool: AdminPoolView = { balance: 50000, currency: 'INR', updatedAt: now() };
+let pool: AdminPoolView = { balance: 300000, currency: 'INR', updatedAt: now() };
 
 function pushEvent(type: string, aggregateId: string, payload: Record<string, unknown>) {
   EVENTS.unshift({
@@ -145,28 +179,85 @@ pushEvent('LoanDisbursed', 'a1', { amount: 15000 });
 pushEvent('TrustScoreChanged', 'a1', { score: 94, tier: 3 });
 pushEvent('MoneyDeposited', 'b2', { amount: 12980.25 });
 pushEvent('FraudRuleTriggered', 'c3', { rule: 'VELOCITY_3_WITHDRAWALS_60S' });
+// Seeded fraud cases (at least two OPEN so the FraudAlerts screen renders flags; one REVIEWED so the bank review screen shows both states)
 FRAUD.push({ caseId: uuid(), accountId: 'c3', rule: 'VELOCITY_3_WITHDRAWALS_60S', riskScore: 82, triggeredByEvent: 'MoneyWithdrawn', status: 'OPEN', flaggedAt: now(), reviewedAt: null });
+FRAUD.push({ caseId: uuid(), accountId: 'a5', rule: 'GEO_VELOCITY_JUMP', riskScore: 34, triggeredByEvent: 'TransferInitiated', status: 'OPEN', flaggedAt: new Date(Date.now() - 86_400_000).toISOString(), reviewedAt: null });
 FRAUD.push({ caseId: uuid(), accountId: 'a1', rule: 'GEO_VELOCITY_JUMP', riskScore: 34, triggeredByEvent: 'MoneyWithdrawn', status: 'REVIEWED', flaggedAt: new Date(Date.now() - 86_400_000).toISOString(), reviewedAt: new Date(Date.now() - 82_800_000).toISOString() });
 notify('a1', 'Your loan was disbursed', 'LoanApproved');
 notify('c3', 'Unusual activity on your account', 'FraudCaseOpened');
 notify('a1', 'Trust tier reached Excellent', 'TrustScoreChanged');
+// Seeded notifications so every VERIFIED account has at least one email notification
+for (const acct of ACCOUNTS) {
+  if (acct.kycStatus === 'VERIFIED') {
+    notify(acct.accountId, 'Recent transaction alert', 'MoneyDeposited');
+  }
+}
 
-// Seeded loans across statuses (customer "My loans" + bank list have content)
-LOANS.push(
-  { loanId: uuid(), accountId: 'a1', amount: 15000, purpose: 'Home renovation', trustTier: 3, status: 'REPAID', requestedAt: new Date(Date.now() - 7 * 86_400_000).toISOString() },
-  { loanId: uuid(), accountId: 'b2', amount: 8000, purpose: 'Laptop purchase', trustTier: 2, status: 'DISBURSED', requestedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() },
-  { loanId: uuid(), accountId: 'd4', amount: 25000, purpose: 'Debt consolidation', trustTier: 0, status: 'REJECTED', requestedAt: new Date(Date.now() - 86_400_000).toISOString() },
-);
+// Seeded loans across tiers and statuses (customer "My loans" + bank list have content)
+const seedLoans = () => {
+  const tierMap: Record<string, number> = { 0: 0, 1: 1, 2: 2, 3: 3 };
+  const loans: LoanRequestView[] = [];
+  // REPAID — trusts the customer with a completed loan
+  loans.push({ loanId: uuid(), accountId: 'a1', amount: 20000, purpose: PURPOSES[0], trustTier: tierMap[TRUST['a1']?.tier ?? 1], status: 'REPAID', requestedAt: new Date(Date.now() - 7 * 86_400_000).toISOString() });
+  // DISBURSED — live loan showing in the customer "My loans" screen
+  loans.push({ loanId: uuid(), accountId: 'b2', amount: 50000, purpose: PURPOSES[1], trustTier: tierMap[TRUST['b2']?.tier ?? 2], status: 'DISBURSED', requestedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() });
+  // QUEUED — standing in the loan queue
+  loans.push({ loanId: uuid(), accountId: ACCOUNTS[3].accountId, amount: 10000, purpose: PURPOSES[2], trustTier: tierMap[TRUST['a4']?.tier ?? 0], status: 'QUEUED', requestedAt: now() });
+  // WAITING_FOR_FUNDS — pool-limited loan waiting for replenishment
+  loans.push({ loanId: uuid(), accountId: ACCOUNTS[5].accountId, amount: 40000, purpose: PURPOSES[3], trustTier: tierMap[TRUST['a6']?.tier ?? 1], status: 'WAITING_FOR_FUNDS', requestedAt: new Date(Date.now() - 86_400_000).toISOString() });
+  // REJECTED — poor trust, no funding available
+  loans.push({ loanId: uuid(), accountId: 'd4', amount: 15000, purpose: PURPOSES[4], trustTier: tierMap[TRUST['d4']?.tier ?? 0], status: 'REJECTED', requestedAt: new Date(Date.now() - 86_400_000).toISOString() });
+  return loans;
+};
+LOANS.push(...seedLoans());
 
-// Seeded reservations (historical, no balance impact)
-RESERVATIONS.set('r-hist-1', { reservationId: 'r-hist-1', accountId: 'b2', amount: 1200, status: 'CAPTURED', expiresAt: new Date(Date.now() - 3600_000).toISOString(), capturedAt: new Date(Date.now() - 3500_000).toISOString(), offlineToken: undefined });
-RESERVATIONS.set('r-hist-2', { reservationId: 'r-hist-2', accountId: 'c3', amount: 1500, status: 'EXPIRED', expiresAt: new Date(Date.now() - 7200_000).toISOString(), capturedAt: null, offlineToken: undefined });
+// Seeded reservations (historical, no balance impact) plus live ones across several accounts
+const seedReservations = () => {
+  const raw: Array<[string, number, string]> = [
+    ['r-hist-1', 1200, 'CAPTURED'],
+    ['r-hist-2', 1500, 'EXPIRED'],
+    ['r-hist-3', 800, 'CAPTURED'],
+  ];
+  for (const [id, amount, status] of raw) {
+    RESERVATIONS.set(id, { reservationId: id, accountId: id.slice(0, 3), amount, status, expiresAt: new Date(Date.now() - Math.floor(Math.random() * 86400_000)).toISOString(), capturedAt: null, offlineToken: undefined });
+  }
+  // Live RESERVED entry for a random account (enough money sitting in the hold bucket)
+  const liveAcct = active()[0];
+  if (liveAcct && liveAcct.availableBalance >= 5000) {
+    const r: ReservationView = { reservationId: uuid(), accountId: liveAcct.accountId, amount: Math.min(5000, liveAcct.availableBalance), status: 'RESERVED', expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(), capturedAt: null, offlineToken: `eyJhbGciOiJSUzI1NiJ9.${btoa(JSON.stringify({ reservationId: uuid(), accountId: liveAcct.accountId, amount: 5000, expiresAt: 30 }))}.SIG` };
+    RESERVATIONS.set(r.reservationId, r);
+  }
+};
+seedReservations();
 
-// Seeded pool history
+// Seeded pool history (12 replenishment events so the PoolManagement screen is never empty)
 POOL_HISTORY.push(
-  { eventId: uuid(), amount: 25000, balanceAfter: 50000, at: new Date(Date.now() - 3 * 86_400_000).toISOString() },
-  { eventId: uuid(), amount: 10000, balanceAfter: 50000, at: new Date(Date.now() - 86_400_000).toISOString() },
+  { eventId: uuid(), amount: 25000, balanceAfter: 300000, at: new Date(Date.now() - 3 * 86_400_000).toISOString() },
+  { eventId: uuid(), amount: 15000, balanceAfter: 315000, at: new Date(Date.now() - 2 * 86_400_000).toISOString() },
+  { eventId: uuid(), amount: 30000, balanceAfter: 345000, at: new Date(Date.now() - 1 * 86_400_000).toISOString() },
+  { eventId: uuid(), amount: 20000, balanceAfter: 365000, at: now() },
 );
+
+// Seeded history: every account gets at least 4 transactions (deposit, withdrawal,
+// transfer-in, transfer-out) spread across the last week, plus original-account events
+const seedHistory = () => {
+  for (const acct of ACCOUNTS) {
+    // Original account gets extra deposit + withdrawals + cross-account transfers
+    if (acct.kycStatus === 'VERIFIED') {
+      TRANSACTIONS.push({ transactionId: uuid(), accountId: acct.accountId, type: 'DEPOSIT', amount: Math.round((5000 + Math.random() * 200000) * 100) / 100, occurredAt: new Date(Date.now() - Math.floor(Math.random() * 86400_000 * 7)).toISOString() });
+      for (let i = 0; i < 3; i++) {
+        TRANSACTIONS.push({ transactionId: uuid(), accountId: acct.accountId, type: ['WITHDRAWAL', 'TRANSFER_IN', 'TRANSFER_OUT'][i], amount: Math.round((2000 + Math.random() * 150000) * 100) / 100, occurredAt: new Date(Date.now() - Math.floor(Math.random() * 86400_000 * 3)).toISOString() });
+      }
+    } else if (acct.status === 'CLOSED') {
+      // Closed accounts still get a deposit before closing — they existed before their close
+      TRANSACTIONS.push({ transactionId: uuid(), accountId: acct.accountId, type: 'DEPOSIT', amount: Math.round((20000 + Math.random() * 200000) * 100) / 100, occurredAt: new Date(Date.now() - 86_400_000).toISOString() });
+    } else {
+      // Active PENDING / REJECTED accounts get at least one deposit so their account screen is not empty
+      TRANSACTIONS.push({ transactionId: uuid(), accountId: acct.accountId, type: 'DEPOSIT', amount: Math.round((5000 + Math.random() * 80000) * 100) / 100, occurredAt: new Date(Date.now() - Math.floor(Math.random() * 86400_000)).toISOString() });
+    }
+  }
+};
+seedHistory();
 
 // ------------------------------------------------------------- loan queue sim
 // score = (3 - tier) * 1e9 + requestedAtMillis  (tier first, FCFS second)

@@ -3,10 +3,19 @@ import { Section, StatusBadge, ErrorNote } from '../../components/ui';
 import { moneyINR, time } from '../../lib/format';import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
-import { PageHeader } from './shared';
 import type { AccountSummary, EventView } from '../../api/contract';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
+
+export function PageHeader({ eyebrow, title, sub }: { eyebrow: string; title: string; sub: string }) {
+  return (
+    <header>
+      <div className="eyebrow">{eyebrow}</div>
+      <h1 className="page-title">{title}</h1>
+      <p className="page-sub">{sub}</p>
+    </header>
+  );
+}
 
 function StatementDrawer({ account, onClose }: { account: AccountSummary; onClose: () => void }) {
   const { data: events } = usePoll(() => live().listAccountEvents(account.accountId), 3000);

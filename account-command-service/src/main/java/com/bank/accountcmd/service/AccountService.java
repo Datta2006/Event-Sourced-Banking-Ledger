@@ -260,6 +260,11 @@ public class AccountService {
     public AccountSnapshot internalCredit(UUID accountId, BigDecimal amount, String reference,
                                           String deviceId, String correlationId) {
         validateAmount(amount);
+        String key = reference == null ? null : "internal-credit:" + reference;
+        Optional<String> replay = idempotency.find(key);
+        if (replay.isPresent()) {
+            return parse(replay.get(), AccountSnapshot.class);
+        }
         withLock(accountId, () -> {
             AccountState state = eventStore.fold(accountId);
             if (!state.exists()) {
@@ -269,12 +274,19 @@ public class AccountService {
                     new Draft("MoneyDeposited", amountPayload(amount, deviceId, reference))), correlationId);
             return null;
         });
-        return eventStore.fold(accountId).snapshot();
+        AccountSnapshot snapshot = eventStore.fold(accountId).snapshot();
+        idempotency.save(key, toJson(snapshot));
+        return snapshot;
     }
 
     public AccountSnapshot internalDebit(UUID accountId, BigDecimal amount, String reference,
                                          String deviceId, String correlationId) {
         validateAmount(amount);
+        String key = reference == null ? null : "internal-debit:" + reference;
+        Optional<String> replay = idempotency.find(key);
+        if (replay.isPresent()) {
+            return parse(replay.get(), AccountSnapshot.class);
+        }
         AccountSnapshot snapshot = withLock(accountId, () -> {
             AccountState state = requireActive(accountId);
             if (state.availableBalance().compareTo(amount) < 0) {
@@ -284,6 +296,7 @@ public class AccountService {
                     new Draft("MoneyWithdrawn", amountPayload(amount, deviceId, reference))), correlationId);
             return eventStore.fold(accountId).snapshot();
         });
+        idempotency.save(key, toJson(snapshot));
         return snapshot;
     }
 

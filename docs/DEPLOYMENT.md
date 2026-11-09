@@ -62,7 +62,7 @@ graph TB
 | `kafka-init` | `apache/kafka:3.7.2` | — | One-shot topic creation for the 5 topics in `EVENT_CATALOG.md` |
 | `postgres` | `postgres:16-alpine` | 5433 | db `ledger` — schemas `account_command` / `loan` / `payment` / `trust_score` (ADR-002) |
 | `ferretdb` | `ghcr.io/ferretdb/ferretdb:2.7.0` | 27017 | Read model (ADR-001) |
-| `ferretdb-postgres` | `ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0` | — | FerretDB's DocumentDB storage backend |
+| `ferretdb-postgres` | `ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0` | — | FerretDB's DocumentDB storage backend (DocumentDB × FerretDB integration) |
 | `mailhog` | `mailhog/mailhog` | 8025 / 1025 | Fake SMTP UI for notifications |
 | 8 service containers | `ddbs-*:0.2.0` | 8080–8087 | See `docs/ARCHITECTURE.md` §3 |
 
@@ -119,3 +119,53 @@ simple (v2 §9 step 6: "don't do this first, it complicates early debugging").
 
 Testcontainers spins up **Valkey** and **a second Postgres shard** in CI (v2 §0) so the
 concurrency tests in `docs/TESTING_STRATEGY.md` run against real infrastructure.
+
+## 8. Demo Authentication Limitations (ADR-005)
+
+Current authentication is limited to demo-grade HS256 HMAC signatures for the initial phase (see `docs/ADR-005-demo-only-hs256-auth.md`). Production-grade OAuth2/OIDC and mutual TLS are planned for v1.2 deployment.
+
+**Consequences for Demo/Testing:**
+
+- Auth endpoints at `/api/auth/login` and `/api/me` return HS256 JWT tokens
+- Offline payment tokens use RS256 with demo RSA key pair (`classpath:/demo-rsa-256.pem`)
+- Role guard enforces coarse "customer/bank/ops" categorization only
+- No MFA, no token rotation, no user provisioning from external ID store
+
+**Demo Accounts:**
+
+- Customer: `customer/customer123` → Account ID `11111111-1111-1111-1111-111111111111`
+- Bank: `bank/bank123`
+
+**Next Steps for Production:**
+
+- v1.1: Add OAuth2/OIDC provider integration
+- v1.2: Implement mutual TLS request signing
+- v1.3: Cluster JWT secret distribution
+- v1.4: Add granular role/permission scoping (RBAC)
+
+## 9. FerretDB Setup Notes
+
+FerretDB serves as the MongoDB wire-compatible read model (CQRS projection destination):
+
+1. **Container Composition**
+   - `ferretdb` exposes the MongoDB-compatible API at port 27017
+   - `ferretdb-postgres` provides the DocumentDB backend (Postgres-agnostic)
+   - `ledger-query-service` connects with `spring-boot-starter-data-mongodb` using URI `mongodb://ferretdb:27017/ddbs`
+
+2. **Projection Idempotency**
+   - Events are projected atomically with `UNIQUE(version)` constraint on `event_id`
+   - No duplicate event processing on consumer restart or replay
+
+3. **Query Example**
+   ```bash
+   # Check projection status via MongoDB shell
+   mongosh mongodb://localhost:27017/ddbs --eval "db.events.find().sort({version:1}).limit(10)"
+   ```
+
+4. **Schema on Demand**
+   - FerretDB infers schema from documents (NoSQL flexibility)
+   - Indexes are created implicitly; explicit multikey indexes can be added for compound queries
+
+5. **Namespace Consideration**
+   - DocumentDB schema versioning is handled implicitly; events are strongly typed at write-time
+   - All projections use the default namespace `ddbs.events` (configurable)

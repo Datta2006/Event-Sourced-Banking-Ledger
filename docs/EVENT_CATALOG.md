@@ -14,7 +14,8 @@
 | Topic | Partitioning | Producers | Consumers |
 |---|---|---|---|
 | `account.commands` | key = `accountId` (partition-per-account) | API-facing services publishing withdrawal/deposit/transfer **commands** (v2 §5.2 allows publishing into `account.events` instead — see `docs/OPEN_DECISIONS.md`) | Account Command Service |
-| `account.events` | key = `accountId` (partition-per-account) | Account Command Service | Ledger Query, Trust Score, Fraud Detection, Notification |
+| `account.events` | key = `accountId` (partition-per-account) | Account Command Service | Ledger Query, Trust Score, Notification |
+| `fraud.events` | key = `accountId` | Fraud Detection Service | Notification, Ledger Query |
 | `loan.events` | key = `accountId` / `loanId` | Loan Service | Trust Score, Fraud Detection, Notification, Ledger Query |
 | `payment.events` | key = `accountId` / `reservationId` | Payment & Reservation Service | Trust Score, Fraud Detection, Notification, Ledger Query |
 | `trust-score.events` | key = `accountId` | Trust Score Service | Loan Service (local tier cache), Notification |
@@ -48,8 +49,26 @@ New in v2 (§3). Loan Service is the sole producer.
 | `LoanRepaidOnTime` | `loanId`, `accountId`, `amount` | Trust Score: +10 (v2 §3.6). Also triggers `AdminPoolReplenished` |
 | `LoanRepaidEarly` | `loanId`, `accountId`, `amount` | Trust Score: +15 (v2 §3.6). Also triggers `AdminPoolReplenished` |
 | `LoanRepaidLate` | `loanId`, `accountId`, `amount` | Trust Score: −8 (v2 §3.6). Also triggers `AdminPoolReplenished` |
+| `LoanRejected` | `loanId`, `accountId`, `amount`, `reason` (`ADMIN_ENFORCEMENT`) | Emitted when admin or system policy rejects a pending loan request (v2 §3.4) |
 | `LoanDefaulted` | `loanId`, `accountId`, `amountOutstanding` | Trust Score: −20 (v2 §3.6) |
 | `AdminPoolReplenished` | `poolId`, `amount`, `reason` (`LOAN_REPAID` \| `ADMIN_DEPOSIT`) | E.g., a loan gets repaid or the admin deposits more; Loan Service re-checks the `WAITING_FOR_FUNDS` list, highest-priority first (v2 §3.4) |
+
+## 4. Fraud detection events — topic `fraud.events`
+
+Fraud Detection Service is the sole producer. Events are emitted after triggering response policies (claimscheduler). Policy chain can immediately reject transaction and emit events for immediate outbound messaging to downstream consumers.
+
+| Event | Payload | Notes |
+|---|---|---|
+| `VelocityRuleDetected` | `accountId`, `riskScore`, `violations` (`HIGH_FREQUENCY_DEPOSITS`, `HIGH_FREQUENCY_WITHDRAWALS`) | Triggered when account hits velocity thresholds (v2 §5) |
+| `SuspiciousPatternDetected` | `accountId`, `riskScore`, `patterns` (`ROUND_AMOUNT_PATTERNS`, `UNUSUAL_TIMING`, `UNUSUAL_LOCATION`) | Triggered when ML scripts detect anomalous event sequences |
+| `MundaneFraudDetected` | `accountId`, `fraudRiskScore`, `transactionId`, `reason` (`OFFLINE_TOKEN_REUSE`, `OFFLINE_TOKEN_EXPIRY`) | Triggered by Payment Reservation Service during offline processing |
+| `FraudCaseOpened` | `caseId`, `accountId`, `riskScore`, `severity`, `actions` (`NOTIFY_BANKER`, `FREEZE_ACCOUNT`, `REPORT_AUTHORITIES`) | Emitted after ML decision to escalate to human review |
+| `FraudResolved` | `caseId`, `accountId`, `resolution`, `outcome` (`USER_VERIFIED`, `FRAUD_CONFIRMED`, `CONCURRENCT_DUPLICATE`) | Emitted when investigation conclusion is logged |
+
+All fraud events trigger:
+- A payment/gateway rule rejection for in-transit transactions
+- A notification to the account holder (email/Push) if applicable
+- An immediate projection into `Ledger Query` (read model) for reporting queries
 
 ## 4. Payment & reservation events — topic `payment.events`
 

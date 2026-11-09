@@ -1,22 +1,32 @@
 server:
   port: 8083
+  shutdown: graceful
 
 spring:
-  config:
-    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: fraud-detection-service
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     producer:
+      acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-    consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      group-id: fraud-detection-service
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
-        spring.json.trusted.packages: '*'
+        enable.idempotence: true
+    consumer:
+      group-id: fraud-detection-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+app:
+  fraud:
+    large-withdrawal-threshold: ${FRAUD_LARGE_WITHDRAWAL_THRESHOLD:200000}
+    velocity-window-seconds: ${FRAUD_VELOCITY_WINDOW_SECONDS:60}
+    velocity-count: ${FRAUD_VELOCITY_COUNT:3}
+    max-cases: ${FRAUD_MAX_CASES:500}
 
 eureka:
   client:
@@ -24,3 +34,16 @@ eureka:
       defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true

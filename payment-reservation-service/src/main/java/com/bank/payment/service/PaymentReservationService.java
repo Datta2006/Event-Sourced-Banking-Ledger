@@ -1,320 +1,449 @@
 package com.bank.payment.service;
 
-import com.bank.payment.model.CaptureFundsCommand;
-import com.bank.payment.model.FundsReservedCommand;
-import com.bank.payment.model.ReleaseFundsCommand;
-import com.bank.payment.persistence.ProcessedRequest;
-import com.bank.payment.persistence.ProcessedRequestRepository;
-import com.bank.payment.persistence.Reservation;
-import com.bank.payment.persistence.ReservationRepository;
+import com.bank.payment.client.AccountClient;
+import com.bank.payment.event.PaymentEventPublisher;
+import com.bank.payment.model.PaymentViews.CaptureRequest;
+import com.bank.payment.model.PaymentViews.PaymentRequest;
+import com.bank.payment.model.PaymentViews.PaymentResult;
+import com.bank.payment.model.PaymentViews.ReservationView;
+import com.bank.payment.model.PaymentViews.ReserveRequest;
+import com.bank.payment.service.ReservationRepository.ReservationRow;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Service handling payment reservations for online and offline payments.
- * Implements requirements from HLD_LLD_SystemDesign_v2.md §4:
- * - Online payments: standard debit/credit through account service
- * - Offline payments: pre-reservation with signed tokens, TTL-based release
- * - Idempotency keys to prevent double-spending
+ * Payment and reservation lifecycle.
  *
- * The partial unique index on captured_at (Flyway migration) is the DB-level
- * double-spend backstop; the RESERVED→CAPTURED guarded update here is the
- * first line of defense against a replayed capture token.
+ * <p>Balances always live in the account service: reservations call its internal
+ * reserve/capture/release endpoints, which append {@code Funds*} events and move
+ * available ↔ reserved. This service owns reservation state and the signed offline
+ * token; it never keeps a second balance projection that could drift.</p>
  */
 @Service
 public class PaymentReservationService {
 
-    @Autowired
-    private ReservationRepository reservationRepository;
+    private static final Logger log = LoggerFactory.getLogger(PaymentReservationService.class);
 
-    @Autowired
-    private ProcessedRequestRepository processedRequestRepository;
+    private final ReservationRepository repository;
+    private final IdempotencyStore idempotency;
+    private final RedissonClient redisson;
+    private final AccountClient accountClient;
+    private final OfflineTokenService tokenService;
+    private final PaymentEventPublisher publisher;
+    private final ObjectMapper objectMapper;
+    private final int defaultTtlMinutes;
 
-    @Autowired
-    private RedissonClient redissonClient;
-
-    @Autowired
-    private com.bank.payment.persistence.AccountBalanceRepository accountBalanceRepository;
-
-    @Autowired
-    private KafkaTemplate<String, String> kafkaTemplate;
-
-    private static final String ACCOUNT_LOCK_PREFIX = "account-lock:";
-
-    /**
-     * Process a funds reservation command (for both online and offline payments).
-     */
-    @Transactional
-    public Reservation processFundsReservation(FundsReservedCommand command) {
-        // Check idempotency first
-        if (isDuplicateRequest(command.getIdempotencyKey())) {
-            // Replay-safe: return the matching live reservation instead of double-processing
-            return reservationRepository
-                    .findByAccountIdAndStatus(command.getAccountId(), "RESERVED")
-                    .stream()
-                    .filter(r -> command.getAmount().compareTo(r.getAmount()) == 0)
-                    .findFirst()
-                    .orElse(null);
-        }
-
-        // Acquire fair lock for the account
-        RLock lock = redissonClient.getFairLock(ACCOUNT_LOCK_PREFIX + command.getAccountId());
-        lock.lock();
-        try {
-            // Check the account exists, is active, and has balance (own-schema projection)
-            com.bank.payment.persistence.AccountBalance balance = accountBalanceRepository
-                    .findById(command.getAccountId().toString())
-                    .orElseThrow(() -> new IllegalStateException("Account not found"));
-
-            if (!"ACTIVE".equals(balance.getStatus())) {
-                throw new IllegalStateException("Account is not active");
-            }
-            if (balance.getAvailableBalance().compareTo(command.getAmount()) < 0) {
-                throw new IllegalStateException("Insufficient funds");
-            }
-
-            // Debit available → reserved
-            balance.setAvailableBalance(balance.getAvailableBalance().subtract(command.getAmount()));
-            balance.setReservedBalance(balance.getReservedBalance().add(command.getAmount()));
-            accountBalanceRepository.save(balance);
-
-            // Create reservation record
-            Reservation reservation = new Reservation(
-                    UUID.randomUUID(),
-                    command.getAccountId(),
-                    command.getAmount(),
-                    "RESERVED",
-                    command.getExpiresAt());
-            reservationRepository.save(reservation);
-
-            // Publish FundsReserved event
-            kafkaTemplate.send("payment.events", command.getAccountId().toString(),
-                    String.format(
-                            "{\"eventId\":\"%s\",\"type\":\"FundsReserved\",\"reservationId\":\"%s\",\"accountId\":\"%s\",\"amount\":%s,\"expiresAt\":\"%s\",\"occurredAt\":\"%s\"}",
-                            UUID.randomUUID(), reservation.getReservationId(), reservation.getAccountId(),
-                            reservation.getAmount(), reservation.getExpiresAt(), OffsetDateTime.now()));
-
-            // Mark request as processed
-            markProcessed(command.getIdempotencyKey(),
-                    "{\"status\":\"RESERVED\",\"reservationId\":\"" + reservation.getReservationId() + "\"}");
-            return reservation;
-        } finally {
-            lock.unlock();
-        }
+    public PaymentReservationService(ReservationRepository repository,
+                                     IdempotencyStore idempotency,
+                                     RedissonClient redisson,
+                                     AccountClient accountClient,
+                                     OfflineTokenService tokenService,
+                                     PaymentEventPublisher publisher,
+                                     ObjectMapper objectMapper,
+                                     @Value("${app.offline-token.default-ttl-minutes:30}") int defaultTtlMinutes) {
+        this.repository = repository;
+        this.idempotency = idempotency;
+        this.redisson = redisson;
+        this.accountClient = accountClient;
+        this.tokenService = tokenService;
+        this.publisher = publisher;
+        this.objectMapper = objectMapper;
+        this.defaultTtlMinutes = defaultTtlMinutes;
     }
 
-    /**
-     * Process a funds capture command (for completing an offline payment).
-     * The payer's RESERVED pot is decremented; the merchant account (when
-     * resolvable) is credited. Replayed captures fail fast on the status guard.
-     */
-    @Transactional
-    public Reservation processCaptureFunds(CaptureFundsCommand command) {
-        // Check idempotency first
-        if (isDuplicateRequest(command.getIdempotencyKey())) {
-            return reservationRepository.findById(command.getReservationId()).orElse(null);
+    // ------------------------------------------------------------------ reservations
+
+    public ReservationView create(ReserveRequest request, String idempotencyKey,
+                                  String correlationId) {
+        Optional<ReservationView> replay = replay(idempotencyKey);
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        if (request.accountId() == null) {
+            throw new PaymentExceptions.BadRequest("accountId is required");
+        }
+        validateAmount(request.amount());
+        int ttl = request.ttlMinutes() == null || request.ttlMinutes() <= 0
+                ? defaultTtlMinutes : request.ttlMinutes();
+        UUID reservationId = deterministicId("reservation", idempotencyKey);
+        Optional<ReservationRow> existing = repository.find(reservationId);
+        if (existing.isPresent()) {
+            return view(existing.get(), true);
+        }
+        OffsetDateTime now = OffsetDateTime.now();
+        OffsetDateTime expiresAt = now.plusMinutes(ttl);
+
+        try {
+            accountClient.reserve(request.accountId(), reservationId, request.amount(), correlationId);
+        } catch (AccountClient.AccountCallException e) {
+            throw mapAccountFailure(e, "Reserve failed");
         }
 
-        RLock lock = redissonClient.getFairLock(ACCOUNT_LOCK_PREFIX + command.getAccountId());
-        lock.lock();
+        String token = tokenService.mint(reservationId, request.accountId(), request.amount(), expiresAt);
+        ReservationRow row = new ReservationRow(reservationId, request.accountId(), request.amount(),
+                "RESERVED", expiresAt, null, token, null, now, null);
         try {
-            Reservation reservation = reservationRepository.findById(command.getReservationId())
-                    .orElseThrow(() -> new IllegalStateException("Reservation not found"));
+            repository.insert(row);
+        } catch (RuntimeException e) {
+            // Compensate the hold if the reservation row could not be stored.
+            try {
+                accountClient.release(request.accountId(), reservationId, request.amount(),
+                        "RESERVATION_WRITE_FAILED", correlationId);
+            } catch (RuntimeException compensation) {
+                log.error("Could not compensate reservation {}: {}",
+                        reservationId, compensation.getMessage());
+            }
+            throw e;
+        }
 
-            if (!reservation.getAccountId().equals(command.getAccountId())) {
-                throw new IllegalStateException("Reservation does not belong to this account");
+        publisher.publish(request.accountId(), "FundsReserved",
+                payload("reservationId", reservationId, "accountId", request.accountId(),
+                        "amount", request.amount(), "expiresAt", expiresAt.toString()),
+                correlationId);
+        ReservationView view = view(row, true);
+        remember(idempotencyKey, view);
+        return view;
+    }
+
+    public List<ReservationView> list(UUID accountId, String status) {
+        return repository.list(accountId, status == null || status.isBlank() ? null : status)
+                .stream().map(row -> view(row, false)).toList();
+    }
+
+    public ReservationView get(UUID reservationId) {
+        return view(find(reservationId), false);
+    }
+
+    public ReservationView capture(UUID reservationId, CaptureRequest request,
+                                   String idempotencyKey, String correlationId) {
+        Optional<ReservationView> replay = replay(idempotencyKey);
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        ReservationView result = withLock(reservationId, () -> {
+            ReservationRow row = find(reservationId);
+            if (!"RESERVED".equals(row.status())) {
+                throw new PaymentExceptions.Conflict(
+                        "Reservation is " + row.status() + " (replayed token rejected)");
             }
-            // Guarded transition — a replayed token hits this branch
-            if (!"RESERVED".equals(reservation.getStatus())) {
-                throw new IllegalStateException(
-                        "Reservation is " + reservation.getStatus() + ", not RESERVED (replay rejected)");
+            if (request.offlineToken() == null || request.offlineToken().isBlank()) {
+                throw new PaymentExceptions.BadRequest("offlineToken is required");
             }
-            if (reservation.getExpiresAt().isBefore(OffsetDateTime.now())) {
-                throw new IllegalStateException("Reservation has expired");
+            OfflineTokenService.Claims claims;
+            try {
+                claims = tokenService.verify(request.offlineToken());
+            } catch (OfflineTokenService.InvalidTokenException e) {
+                throw new PaymentExceptions.BadRequest(e.getMessage());
+            }
+            if (!reservationId.toString().equals(claims.reservationId())
+                    || !row.accountId().equals(claims.accountId())
+                    || row.amount().compareTo(claims.amount()) != 0) {
+                throw new PaymentExceptions.BadRequest("Token does not match this reservation");
+            }
+            OffsetDateTime now = OffsetDateTime.now();
+            if (now.isAfter(row.expiresAt())) {
+                expire(row, correlationId);
+                throw new PaymentExceptions.Gone("Reservation has expired");
             }
 
-            // Atomic single-row update: only succeeds from RESERVED
-            int updated = reservationRepository.captureIfReserved(
-                    reservation.getReservationId(), OffsetDateTime.now());
+            try {
+                accountClient.capture(row.accountId(), reservationId, row.amount(), correlationId);
+            } catch (AccountClient.AccountCallException e) {
+                throw mapAccountFailure(e, "Capture failed");
+            }
+
+            UUID merchantId = request.merchantAccountId() != null
+                    ? request.merchantAccountId() : row.merchantAccountId();
+            if (merchantId != null) {
+                try {
+                    accountClient.credit(merchantId, row.amount(),
+                            "PAYMENT_CAPTURE:" + reservationId, correlationId);
+                } catch (AccountClient.AccountCallException e) {
+                    // The payer hold is gone but the merchant could not be paid:
+                    // return the money to the payer and mark the reservation released.
+                    try {
+                        accountClient.credit(row.accountId(), row.amount(),
+                                "PAYMENT_CAPTURE_REVERSAL:" + reservationId, correlationId);
+                    } catch (RuntimeException compensation) {
+                        log.error("Capture reversal for {} failed: {}",
+                                reservationId, compensation.getMessage());
+                    }
+                    repository.forceStatus(reservationId, "RELEASED", OffsetDateTime.now());
+                    publisher.publish(row.accountId(), "FundsReleased",
+                            payload("reservationId", reservationId, "accountId", row.accountId(),
+                                    "amount", row.amount(), "reason", "MERCHANT_CREDIT_FAILED"),
+                            correlationId);
+                    throw mapAccountFailure(e, "Merchant credit failed");
+                }
+            }
+
+            int updated = repository.markCaptured(reservationId, merchantId, now);
             if (updated != 1) {
-                throw new IllegalStateException("Reservation no longer RESERVED (concurrent capture lost)");
+                throw new PaymentExceptions.Conflict("Concurrent capture lost the race");
             }
-            reservation.setStatus("CAPTURED");
-            reservation.setCapturedAt(OffsetDateTime.now());
-
-            // Move the money within the owning schema: reserved ↓ , merchant available ↑
-            com.bank.payment.persistence.AccountBalance payer =
-                    accountBalanceRepository.findById(reservation.getAccountId().toString())
-                            .orElseThrow(() -> new IllegalStateException("Payer account missing"));
-            payer.setReservedBalance(payer.getReservedBalance().subtract(reservation.getAmount()));
-            accountBalanceRepository.save(payer);
-
-            com.bank.payment.persistence.AccountBalance merchant =
-                    command.getMerchantAccountId() == null ? null :
-                    accountBalanceRepository.findById(command.getMerchantAccountId().toString()).orElse(null);
-            if (merchant != null) {
-                merchant.setAvailableBalance(merchant.getAvailableBalance().add(reservation.getAmount()));
-                accountBalanceRepository.save(merchant);
-            }
-
-            // Publish FundsCaptured event
-            kafkaTemplate.send("payment.events", reservation.getAccountId().toString(),
-                    String.format(
-                            "{\"eventId\":\"%s\",\"type\":\"FundsCaptured\",\"reservationId\":\"%s\",\"accountId\":\"%s\",\"merchantAccountId\":\"%s\",\"amount\":%s,\"capturedAt\":\"%s\",\"occurredAt\":\"%s\"}",
-                            UUID.randomUUID(), reservation.getReservationId(), reservation.getAccountId(),
-                            command.getMerchantAccountId(), reservation.getAmount(),
-                            reservation.getCapturedAt(), OffsetDateTime.now()));
-
-            markProcessed(command.getIdempotencyKey(),
-                    "{\"status\":\"CAPTURED\",\"reservationId\":\"" + reservation.getReservationId() + "\"}");
-            return reservation;
-        } finally {
-            lock.unlock();
-        }
+            publisher.publish(row.accountId(), "FundsCaptured",
+                    payload("reservationId", reservationId, "accountId", row.accountId(),
+                            "merchantAccountId", merchantId, "amount", row.amount(),
+                            "capturedAt", now.toString()), correlationId);
+            return view(find(reservationId), false);
+        });
+        remember(idempotencyKey, result);
+        return result;
     }
 
-    /**
-     * Process a funds release command (for expiring or canceling reservations).
-     */
-    @Transactional
-    public Reservation processReleaseFunds(ReleaseFundsCommand command) {
-        // Check idempotency first
-        if (isDuplicateRequest(command.getIdempotencyKey())) {
-            return reservationRepository.findById(command.getReservationId()).orElse(null);
+    public ReservationView voidReservation(UUID reservationId, String idempotencyKey,
+                                           String correlationId) {
+        Optional<ReservationView> replay = replay(idempotencyKey);
+        if (replay.isPresent()) {
+            return replay.get();
         }
+        ReservationView result = withLock(reservationId, () -> {
+            ReservationRow row = find(reservationId);
+            if (!"RESERVED".equals(row.status())) {
+                throw new PaymentExceptions.Conflict("Reservation is " + row.status());
+            }
+            release(row, "RELEASED", "MANUAL_VOID", correlationId);
+            return view(find(reservationId), false);
+        });
+        remember(idempotencyKey, result);
+        return result;
+    }
 
-        RLock lock = redissonClient.getFairLock(ACCOUNT_LOCK_PREFIX + command.getAccountId());
-        lock.lock();
+    // ------------------------------------------------------------------ online payment
+
+    public PaymentResult payOnline(PaymentRequest request, String idempotencyKey,
+                                   String correlationId) {
+        Optional<PaymentResult> replay = replayPayment(idempotencyKey);
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        if (request.fromAccountId() == null || request.toAccountId() == null) {
+            throw new PaymentExceptions.BadRequest("fromAccountId and toAccountId are required");
+        }
+        if (request.fromAccountId().equals(request.toAccountId())) {
+            throw new PaymentExceptions.BadRequest("Cannot pay the same account");
+        }
+        validateAmount(request.amount());
+        UUID paymentId = deterministicId("payment", idempotencyKey);
         try {
-            Reservation reservation = reservationRepository.findById(command.getReservationId())
-                    .orElseThrow(() -> new IllegalStateException("Reservation not found"));
-
-            if (!reservation.getAccountId().equals(command.getAccountId())) {
-                throw new IllegalStateException("Reservation does not belong to this account");
+            accountClient.debit(request.fromAccountId(), request.amount(),
+                    "ONLINE_PAYMENT_OUT:" + paymentId, correlationId);
+        } catch (AccountClient.AccountCallException e) {
+            throw mapAccountFailure(e, "Payment debit failed");
+        }
+        try {
+            accountClient.credit(request.toAccountId(), request.amount(),
+                    "ONLINE_PAYMENT_IN:" + paymentId, correlationId);
+        } catch (AccountClient.AccountCallException e) {
+            try {
+                accountClient.credit(request.fromAccountId(), request.amount(),
+                        "ONLINE_PAYMENT_REVERSAL:" + paymentId, correlationId);
+            } catch (RuntimeException compensation) {
+                log.error("Online payment reversal {} failed: {}", paymentId, compensation.getMessage());
             }
-            if (!"RESERVED".equals(reservation.getStatus())) {
-                throw new IllegalStateException("Reservation is not in RESERVED status");
+            throw mapAccountFailure(e, "Payment credit failed and was reversed");
+        }
+        PaymentResult result = new PaymentResult(paymentId, "COMPLETED");
+        rememberPayment(idempotencyKey, result);
+        return result;
+    }
+
+    // ------------------------------------------------------------------ expiry
+
+    @Scheduled(fixedDelayString = "${app.reservation.expiry-delay-ms:30000}", initialDelay = 10000)
+    public void expireReservations() {
+        for (ReservationRow row : repository.findExpired(OffsetDateTime.now(), 50)) {
+            try {
+                withLock(row.reservationId(), () -> {
+                    ReservationRow current = find(row.reservationId());
+                    if ("RESERVED".equals(current.status())) {
+                        expire(current, "expiry-job");
+                    }
+                    return null;
+                });
+            } catch (RuntimeException e) {
+                log.warn("Could not expire reservation {}: {}",
+                        row.reservationId(), e.getMessage());
             }
-
-            String newStatus = "EXPIRED".equals(command.getReason()) ? "EXPIRED" : "RELEASED";
-            reservation.setStatus(newStatus);
-            reservationRepository.save(reservation);
-
-            // Return funds: reserved ↓ , available ↑
-            com.bank.payment.persistence.AccountBalance balance =
-                    accountBalanceRepository.findById(reservation.getAccountId().toString())
-                            .orElseThrow(() -> new IllegalStateException("Account not found"));
-            balance.setReservedBalance(balance.getReservedBalance().subtract(reservation.getAmount()));
-            balance.setAvailableBalance(balance.getAvailableBalance().add(reservation.getAmount()));
-            accountBalanceRepository.save(balance);
-
-            // Publish FundsReleased event
-            kafkaTemplate.send("payment.events", reservation.getAccountId().toString(),
-                    String.format(
-                            "{\"eventId\":\"%s\",\"type\":\"FundsReleased\",\"reservationId\":\"%s\",\"accountId\":\"%s\",\"amount\":%s,\"reason\":\"%s\",\"occurredAt\":\"%s\"}",
-                            UUID.randomUUID(), reservation.getReservationId(), reservation.getAccountId(),
-                            reservation.getAmount(), newStatus, OffsetDateTime.now()));
-
-            markProcessed(command.getIdempotencyKey(),
-                    "{\"status\":\"" + newStatus + "\",\"reservationId\":\"" + reservation.getReservationId() + "\"}");
-            return reservation;
-        } finally {
-            lock.unlock();
         }
     }
 
-    /**
-     * Scheduled task to release expired reservations.
-     * Runs every minute; the DB-level guarded transition keeps this idempotent.
-     */
-    @Transactional
-    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60000)
-    public void releaseExpiredReservations() {
-        reservationRepository.findExpiredNow(OffsetDateTime.now()).forEach(r -> {
-            r.setStatus("EXPIRED");
-            reservationRepository.save(r);
+    // ------------------------------------------------------------------ helpers
 
-            com.bank.payment.persistence.AccountBalance balance =
-                    accountBalanceRepository.findById(r.getAccountId().toString()).orElse(null);
-            if (balance != null) {
-                balance.setReservedBalance(balance.getReservedBalance().subtract(r.getAmount()));
-                balance.setAvailableBalance(balance.getAvailableBalance().add(r.getAmount()));
-                accountBalanceRepository.save(balance);
+    private void expire(ReservationRow row, String correlationId) {
+        try {
+            accountClient.release(row.accountId(), row.reservationId(), row.amount(),
+                    "EXPIRED", correlationId);
+        } catch (AccountClient.AccountCallException e) {
+            throw mapAccountFailure(e, "Release failed");
+        }
+        int updated = repository.markReleased(row.reservationId(), "EXPIRED", OffsetDateTime.now());
+        if (updated == 1) {
+            publisher.publish(row.accountId(), "FundsReleased",
+                    payload("reservationId", row.reservationId(), "accountId", row.accountId(),
+                            "amount", row.amount(), "reason", "EXPIRED"), correlationId);
+        }
+    }
+
+    private void release(ReservationRow row, String status, String reason, String correlationId) {
+        try {
+            accountClient.release(row.accountId(), row.reservationId(), row.amount(),
+                    reason, correlationId);
+        } catch (AccountClient.AccountCallException e) {
+            throw mapAccountFailure(e, "Release failed");
+        }
+        int updated = repository.markReleased(row.reservationId(), status, OffsetDateTime.now());
+        if (updated != 1) {
+            throw new PaymentExceptions.Conflict("Reservation is no longer RESERVED");
+        }
+        publisher.publish(row.accountId(), "FundsReleased",
+                payload("reservationId", row.reservationId(), "accountId", row.accountId(),
+                        "amount", row.amount(), "reason", reason), correlationId);
+    }
+
+    private ReservationRow find(UUID reservationId) {
+        return repository.find(reservationId)
+                .orElseThrow(() -> new PaymentExceptions.NotFound(
+                        "Reservation not found: " + reservationId));
+    }
+
+    private ReservationView view(ReservationRow row, boolean includeToken) {
+        return new ReservationView(row.reservationId(), row.accountId(), row.amount(),
+                row.status(), row.expiresAt(), row.capturedAt(),
+                includeToken ? row.offlineToken() : null);
+    }
+
+    private RuntimeException mapAccountFailure(AccountClient.AccountCallException e, String prefix) {
+        if (e.status() == 409) {
+            return new PaymentExceptions.Conflict(prefix + ": " + e.getMessage());
+        }
+        if (e.status() == 404) {
+            return new PaymentExceptions.NotFound(prefix + ": " + e.getMessage());
+        }
+        if (e.status() == 400) {
+            return new PaymentExceptions.BadRequest(prefix + ": " + e.getMessage());
+        }
+        return new PaymentExceptions.Upstream(prefix + ": " + e.getMessage());
+    }
+
+    private ReservationView withLock(UUID reservationId, java.util.function.Supplier<ReservationView> work) {
+        RLock lock = redisson.getFairLock("reservation-lock:" + reservationId);
+        boolean acquired = false;
+        try {
+            acquired = lock.tryLock(10, 30, TimeUnit.SECONDS);
+            if (!acquired) {
+                throw new PaymentExceptions.Conflict("Could not lock reservation " + reservationId);
             }
+            return work.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PaymentExceptions.Conflict("Interrupted while locking reservation");
+        } finally {
+            if (acquired && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
 
-            kafkaTemplate.send("payment.events", r.getAccountId().toString(),
-                    String.format(
-                            "{\"eventId\":\"%s\",\"type\":\"FundsReleased\",\"reservationId\":\"%s\",\"accountId\":\"%s\",\"amount\":%s,\"reason\":\"EXPIRED\",\"occurredAt\":\"%s\"}",
-                            UUID.randomUUID(), r.getReservationId(), r.getAccountId(),
-                            r.getAmount(), OffsetDateTime.now()));
+    private static void validateAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new PaymentExceptions.BadRequest("amount must be greater than zero");
+        }
+        if (amount.scale() > 2) {
+            throw new PaymentExceptions.BadRequest("amount supports at most 2 decimal places");
+        }
+    }
+
+    private static UUID deterministicId(String namespace, String key) {
+        if (key == null || key.isBlank()) {
+            return UUID.randomUUID();
+        }
+        return UUID.nameUUIDFromBytes((namespace + ":" + key).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static Map<String, Object> payload(Object... pairs) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            map.put(String.valueOf(pairs[i]), pairs[i + 1]);
+        }
+        return map;
+    }
+
+    private Optional<ReservationView> replay(String key) {
+        return idempotency.find(key).map(json -> {
+            try {
+                return objectMapper.readValue(json, ReservationView.class);
+            } catch (Exception e) {
+                throw new IllegalStateException("Cannot replay reservation response", e);
+            }
         });
     }
 
-    /**
-     * Check if a request with this idempotency key has already been processed.
-     */
-    private boolean isDuplicateRequest(String idempotencyKey) {
-        return idempotencyKey != null
-                && processedRequestRepository.findById(idempotencyKey).isPresent();
+    private Optional<PaymentResult> replayPayment(String key) {
+        return idempotency.find(key).map(json -> {
+            try {
+                return objectMapper.readValue(json, PaymentResult.class);
+            } catch (Exception e) {
+                throw new IllegalStateException("Cannot replay payment response", e);
+            }
+        });
     }
 
-    /**
-     * Mark a request as processed for idempotency.
-     */
-    private void markProcessed(String idempotencyKey, String responseSnapshot) {
-        if (idempotencyKey == null) {
-            return; // commands without a key are not replay-protected
+    private void remember(String key, ReservationView view) {
+        try {
+            idempotency.save(key, objectMapper.writeValueAsString(view));
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot store idempotent reservation response", e);
         }
-        ProcessedRequest processedRequest = new ProcessedRequest(
-                idempotencyKey, responseSnapshot, OffsetDateTime.now().plusHours(24));
-        processedRequestRepository.save(processedRequest);
     }
 
-    // ------------------------------------------------------------------
-    // Read-model companions (UI + bank overview)
-    // ------------------------------------------------------------------
-
-    public List<Reservation> listAll() {
-        return reservationRepository.findAll();
+    private void rememberPayment(String key, PaymentResult result) {
+        try {
+            idempotency.save(key, objectMapper.writeValueAsString(result));
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot store idempotent payment response", e);
+        }
     }
 
-    public List<Reservation> listByAccount(UUID accountId) {
-        return reservationRepository.findByAccountId(accountId);
-    }
+    /** Payment-specific failures. */
+    public static final class PaymentExceptions {
+        private PaymentExceptions() {
+        }
 
-    public List<Reservation> listByStatus(String status) {
-        return reservationRepository.findByStatus(status);
-    }
+        public static class NotFound extends RuntimeException {
+            public NotFound(String message) { super(message); }
+        }
 
-    public List<Reservation> listByAccountAndStatus(UUID accountId, String status) {
-        return reservationRepository.findByAccountIdAndStatus(accountId, status);
-    }
+        public static class Conflict extends RuntimeException {
+            public Conflict(String message) { super(message); }
+        }
 
-    public java.util.Optional<Reservation> getReservation(UUID reservationId) {
-        return reservationRepository.findById(reservationId);
-    }
+        public static class BadRequest extends RuntimeException {
+            public BadRequest(String message) { super(message); }
+        }
 
-    /**
-     * Mint the offline payment token (v2 §4.2): a self-contained JWT with
-     * {reservationId, accountId, amount, expiresAt}. The merchant is meant to
-     * verify it offline (asymmetric signature); this demo issues a
-     * structurally-identical Johnson-style compact token so the UI flow works
-     * end-to-end without a keystore.
-     */
-    public static String mintOfflineToken(Reservation r) {
-        String claims = String.format(
-                "{\"reservationId\":\"%s\",\"accountId\":\"%s\",\"amount\":%s,\"expiresAt\":\"%s\"}",
-                r.getReservationId(), r.getAccountId(), r.getAmount(), r.getExpiresAt());
-        return "lt1." + java.util.Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(claims.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-                + ".demo-sig";
+        public static class Upstream extends RuntimeException {
+            public Upstream(String message) { super(message); }
+        }
+
+        public static class Gone extends RuntimeException {
+            public Gone(String message) { super(message); }
+        }
     }
 }

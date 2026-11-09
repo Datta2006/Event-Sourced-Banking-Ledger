@@ -1,20 +1,18 @@
 server:
   port: 8086
+  shutdown: graceful
 
 spring:
-  config:
-    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: payment-reservation-service
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/ledger}
-    username: ddbs
-    password: ddbs
-  jpa:
-    hibernate:
-      # schema is Flyway-managed (db/migration) — validate only, never mutate
-      ddl-auto: validate
-    show-sql: false
+    username: ${SPRING_DATASOURCE_USERNAME:ddbs}
+    password: ${SPRING_DATASOURCE_PASSWORD:ddbs}
+    hikari:
+      maximum-pool-size: 8
   flyway:
     locations: classpath:db/migration
     default-schema: payment
@@ -22,32 +20,28 @@ spring:
     create-schemas: true
     baseline-on-migrate: true
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     producer:
+      acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-    consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      group-id: payment-reservation-service
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
-        spring.json.trusted.packages: '*'
+        enable.idempotence: true
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
 
-# v2 §4.2: reservation TTL handling runs against Valkey via Redisson.
 redisson:
   single-server-config:
-    address: "redis://localhost:6379"
+    address: ${REDISSON_ADDRESS:redis://localhost:6379}
 
-# v2 §4.2: offline payment tokens are signed asymmetrically (Nimbus JOSE+JWT).
-# The private key stays bank-side; merchant devices verify with the public key offline.
-offline-token:
-  keystore-path: classpath:offline-token-signing-key.pem
-  issuer: ddbs-payment-reservation
-  default-ttl-minutes: 30
+app:
+  account-service:
+    url: ${ACCOUNT_SERVICE_URL:http://localhost:8081}
+  offline-token:
+    issuer: ${OFFLINE_TOKEN_ISSUER:ddbs-payment-reservation}
+    default-ttl-minutes: ${OFFLINE_TOKEN_TTL_MINUTES:30}
 
 eureka:
   client:
@@ -55,8 +49,20 @@ eureka:
       defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+  instance:
+    prefer-ip-address: true
 
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: always   # expose db/kafka/redis indicators for compose healthcheck + CI
+      show-details: always
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{ISO8601} %-5level [%X{correlationId:-no-correlation}] %logger{36} - %msg%n"

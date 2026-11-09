@@ -161,7 +161,7 @@ function Portal({ theme, toggleTheme }: { theme: 'light' | 'dark'; toggleTheme: 
     return () => window.removeEventListener('keydown', onKey);
   }, [role, nav, navigate]);
 
-  if (isLive && !session) {
+  if (!session) {
     return <Navigate to="/login" replace />;
   }
   if (isLive && expectedRole && session && session.role !== expectedRole) {

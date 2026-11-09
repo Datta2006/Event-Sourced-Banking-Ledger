@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { clearSession, getSession, login, setSession } from './auth';
-import { isLive } from './api/base';
 
 const HOME = { CUSTOMER: 'dashboard', BANK: 'ops' } as const;
 
@@ -14,9 +13,6 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const existing = getSession();
 
-  if (!isLive) {
-    return <Navigate to="/customer/dashboard" replace />;
-  }
   if (existing && !params.get('switch')) {
     return <Navigate to={`/${existing.role.toLowerCase()}/${HOME[existing.role]}`} replace />;
   }
@@ -132,22 +128,6 @@ export function LoginPage() {
           >
             Sign out of {existing.displayName}
           </button>
-        )}
-
-        {isLive && !existing && (
-          <div style={{ marginTop: 'var(--sp-lg)', padding: 'var(--sp-md)', background: 'var(--bg-subtle)', borderRadius: 8 }}>
-            <div className="eyebrow" style={{ marginTop: 0 }}>New to Meridian?</div>
-            <div style={{ marginTop: 'var(--sp-sm)' }}>
-              <Link to="/customer/open-account" style={{ textDecoration: 'none' }}>
-                <button className="btn btn-primary" type="button" style={{ width: '100%' }}>
-                  Open your first account
-                </button>
-              </Link>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, textAlign: 'center' }}>
-                Create an account with an initial deposit
-              </div>
-            </div>
-          </div>
         )}
       </div>
     </div>

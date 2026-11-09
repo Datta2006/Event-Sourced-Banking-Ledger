@@ -140,10 +140,7 @@ public class TrustScoreService {
         LocalDate day = now.withOffsetSameInstant(ZoneOffset.UTC).toLocalDate();
         DepositRow current = repository.lockDailyDeposits(accountId, day);
         BigDecimal total = current.totalDeposited().add(amount);
-        int rawPoints = total
-                .divide(BigDecimal.valueOf(20000), 0, RoundingMode.DOWN)
-                .intValue();
-        int capped = Math.min(rawPoints, DEPOSIT_DAILY_CAP);
+        int capped = depositPoints(total);
         int award = Math.max(0, capped - current.pointsAwarded());
         repository.updateDailyDeposits(accountId, day, total, capped);
         if (award > 0) {
@@ -176,6 +173,16 @@ public class TrustScoreService {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    static int depositPoints(BigDecimal totalDepositedToday) {
+        if (totalDepositedToday == null || totalDepositedToday.signum() <= 0) {
+            return 0;
+        }
+        int rawPoints = totalDepositedToday
+                .divide(BigDecimal.valueOf(20000), 0, RoundingMode.DOWN)
+                .intValue();
+        return Math.min(rawPoints, DEPOSIT_DAILY_CAP);
+    }
 
     static int tierOf(int score) {
         if (score >= 91) {

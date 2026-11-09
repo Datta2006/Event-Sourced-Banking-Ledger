@@ -1,5 +1,11 @@
+# Multi-stage build from the repository root (compose context: .).
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY . .
+RUN --mount=type=cache,target=/root/.m2 mvn -q -pl fraud-detection-service -am -DskipTests package
+
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-COPY target/fraud-detection-service-0.2.0-SNAPSHOT.jar app.jar
+COPY --from=build /app/fraud-detection-service/target/*.jar app.jar
 EXPOSE 8083
 ENTRYPOINT ["java", "-jar", "app.jar"]

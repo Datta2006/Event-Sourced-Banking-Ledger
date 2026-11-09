@@ -4,8 +4,13 @@ server:
 spring:
   application:
     name: config-server
+  profiles:
+    # Native backend: serve plain files from the mounted config repo. The git
+    # backend requires a real .git directory, which the read-only bind mount
+    # intentionally is not.
+    active: native
   cloud:
     config:
       server:
-        git:
-          uri: file:///tmp/ddbs-config-repo
+        native:
+          search-locations: file:/tmp/ddbs-config-repo

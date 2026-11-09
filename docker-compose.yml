@@ -131,6 +131,8 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic loan.events      --partitions 3
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.events   --partitions 3
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic trust-score.events --partitions 3
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic fraud.events --partitions 3
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic notification.dlq --partitions 1
         echo "ddbs topics ready"
     networks:
       - ddbs-network
@@ -146,6 +148,7 @@ services:
       POSTGRES_PASSWORD: ddbs
     volumes:
       - ddbs-postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-shards.sql:/docker-entrypoint-initdb.d/10-shards.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ddbs -d ledger"]
       interval: 5s
@@ -163,7 +166,7 @@ services:
     environment:
       POSTGRES_USER: ddbs
       POSTGRES_PASSWORD: ddbs
-      POSTGRES_DB: ddbs
+      POSTGRES_DB: postgres
     volumes:
       - ddbs-ferretdb-pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -180,7 +183,7 @@ services:
     ports:
       - "27017:27017"
     environment:
-      - FERRETDB_POSTGRESQL_URL=postgres://ddbs:ddbs@ferretdb-postgres:5432/ddbs
+      - FERRETDB_POSTGRESQL_URL=postgres://ddbs:ddbs@ferretdb-postgres:5432/postgres
     depends_on:
       ferretdb-postgres:
         condition: service_healthy
@@ -204,13 +207,20 @@ services:
     <<: *java-service
     image: ddbs-api-gateway:0.2.0
     build:
-      context: ./api-gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api-gateway/Dockerfile
     ports:
       - "8080:8080"
     environment:
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
       - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - AUTH_ENABLED=true
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-ddbs-demo-secret-change-me-please-32b}
+      - AUTH_CUSTOMER_USER=${AUTH_CUSTOMER_USER:-customer}
+      - AUTH_CUSTOMER_PASSWORD=${AUTH_CUSTOMER_PASSWORD:-customer123}
+      - AUTH_CUSTOMER_ACCOUNT=${AUTH_CUSTOMER_ACCOUNT:-11111111-1111-1111-1111-111111111111}
+      - AUTH_BANK_USER=${AUTH_BANK_USER:-bank}
+      - AUTH_BANK_PASSWORD=${AUTH_BANK_PASSWORD:-bank123}
     depends_on:
       eureka-server:
         condition: service_healthy
@@ -230,17 +240,23 @@ services:
     <<: *java-service
     image: ddbs-account-command:0.2.0
     build:
-      context: ./account-command-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: account-command-service/Dockerfile
     ports:
       - "8081:8081"
     environment:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger?currentSchema=account_command
       - SPRING_DATASOURCE_USERNAME=ddbs
       - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SHARD_APAC_URL=jdbc:postgresql://postgres:5432/ddbs_apac
+      - SHARD_EU_URL=jdbc:postgresql://postgres:5432/ddbs_eu
+      - SHARD_AMER_URL=jdbc:postgresql://postgres:5432/ddbs_amer
+      - SHARD_DB_USERNAME=ddbs
+      - SHARD_DB_PASSWORD=ddbs
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_DATA_REDIS_HOST=valkey
       - REDISSON_ADDRESS=redis://valkey:6379
+      - SAGA_PAUSE_AFTER_SOURCE_MS=${SAGA_PAUSE_AFTER_SOURCE_MS:-0}
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
       - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
     depends_on:
@@ -266,16 +282,21 @@ services:
     <<: *java-service
     image: ddbs-ledger-query:0.2.0
     build:
-      context: ./ledger-query-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ledger-query-service/Dockerfile
     ports:
       - "8082:8082"
     environment:
-      - SPRING_DATA_MONGODB_URI=mongodb://ddbs:ddbs@ferretdb:27017/ddbs
+      - SPRING_DATA_MONGODB_URI=mongodb://ddbs:ddbs@ferretdb:27017/ddbs?authMechanism=SCRAM-SHA-256
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ledger
       - SPRING_DATASOURCE_USERNAME=ddbs
       - SPRING_DATASOURCE_PASSWORD=ddbs
+      - SHARD_APAC_URL=jdbc:postgresql://postgres:5432/ddbs_apac
+      - SHARD_EU_URL=jdbc:postgresql://postgres:5432/ddbs_eu
+      - SHARD_AMER_URL=jdbc:postgresql://postgres:5432/ddbs_amer
+      - SHARD_DB_USERNAME=ddbs
+      - SHARD_DB_PASSWORD=ddbs
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
       - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
     depends_on:
@@ -301,8 +322,8 @@ services:
     <<: *java-service
     image: ddbs-fraud-detection:0.2.0
     build:
-      context: ./fraud-detection-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: fraud-detection-service/Dockerfile
     ports:
       - "8083:8083"
     environment:
@@ -328,8 +349,8 @@ services:
     <<: *java-service
     image: ddbs-notification:0.2.0
     build:
-      context: ./notification-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: notification-service/Dockerfile
     ports:
       - "8084:8084"
     environment:
@@ -357,8 +378,8 @@ services:
     <<: *java-service
     image: ddbs-loan:0.2.0
     build:
-      context: ./loan-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: loan-service/Dockerfile
     ports:
       - "8085:8085"
     environment:
@@ -368,6 +389,7 @@ services:
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_DATA_REDIS_HOST=valkey
       - REDISSON_ADDRESS=redis://valkey:6379
+      - ACCOUNT_SERVICE_URL=http://account-command-service:8081
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
       - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
     depends_on:
@@ -378,6 +400,8 @@ services:
       valkey:
         condition: service_healthy
       eureka-server:
+        condition: service_healthy
+      account-command-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health | grep -q '\"status\":\"UP\"'"]
@@ -393,8 +417,8 @@ services:
     <<: *java-service
     image: ddbs-payment-reservation:0.2.0
     build:
-      context: ./payment-reservation-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: payment-reservation-service/Dockerfile
     ports:
       - "8086:8086"
     environment:
@@ -404,6 +428,7 @@ services:
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_DATA_REDIS_HOST=valkey
       - REDISSON_ADDRESS=redis://valkey:6379
+      - ACCOUNT_SERVICE_URL=http://account-command-service:8081
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://eureka-server:8761/eureka/
       - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
     depends_on:
@@ -414,6 +439,8 @@ services:
       valkey:
         condition: service_healthy
       eureka-server:
+        condition: service_healthy
+      account-command-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8086/actuator/health | grep -q '\"status\":\"UP\"'"]
@@ -429,8 +456,8 @@ services:
     <<: *java-service
     image: ddbs-trust-score:0.2.0
     build:
-      context: ./trust-score-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: trust-score-service/Dockerfile
     ports:
       - "8087:8087"
     environment:
@@ -453,6 +480,28 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
+    networks:
+      - ddbs-network
+
+  # --- Browser UI (React SPA; two role-guarded portals) ---
+  frontend:
+    image: ddbs-frontend:0.2.0
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8080}
+    ports:
+      - "3000:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/healthz | grep -q ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
     networks:
       - ddbs-network
 

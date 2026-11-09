@@ -169,6 +169,13 @@ public class AccountService {
         }
         validateAmount(amount);
         AccountSnapshot snapshot = withLock(accountId, () -> {
+            // Re-check under the account lock: two concurrent retries with the
+            // same key can both pass the optimistic check above before either
+            // has stored its response.
+            Optional<String> replayed = idempotency.find(idempotencyKey);
+            if (replayed.isPresent()) {
+                return parse(replayed.get(), AccountSnapshot.class);
+            }
             AccountState state = requireActive(accountId);
             String region = state.region();
             appendAndPublish(state.accountId(), region, List.of(
@@ -188,6 +195,10 @@ public class AccountService {
         }
         validateAmount(amount);
         AccountSnapshot snapshot = withLock(accountId, () -> {
+            Optional<String> replayed = idempotency.find(idempotencyKey);
+            if (replayed.isPresent()) {
+                return parse(replayed.get(), AccountSnapshot.class);
+            }
             AccountState state = requireActive(accountId);
             if (state.availableBalance().compareTo(amount) < 0) {
                 throw new AccountExceptions.Conflict(
@@ -208,6 +219,10 @@ public class AccountService {
             return parse(replay.get(), AccountSnapshot.class);
         }
         AccountSnapshot snapshot = withLock(accountId, () -> {
+            Optional<String> replayed = idempotency.find(idempotencyKey);
+            if (replayed.isPresent()) {
+                return parse(replayed.get(), AccountSnapshot.class);
+            }
             AccountState state = requireActive(accountId);
             if (state.reservedBalance().signum() > 0) {
                 throw new AccountExceptions.Conflict(
@@ -237,6 +252,10 @@ public class AccountService {
             throw new AccountExceptions.BadRequest("kycStatus must be PENDING, VERIFIED or REJECTED");
         }
         AccountSnapshot snapshot = withLock(accountId, () -> {
+            Optional<String> replayed = idempotency.find(idempotencyKey);
+            if (replayed.isPresent()) {
+                return parse(replayed.get(), AccountSnapshot.class);
+            }
             AccountState state = eventStore.fold(accountId);
             if (!state.exists()) {
                 throw new AccountExceptions.NotFound("Account not found: " + accountId);
@@ -265,16 +284,19 @@ public class AccountService {
         if (replay.isPresent()) {
             return parse(replay.get(), AccountSnapshot.class);
         }
-        withLock(accountId, () -> {
+        AccountSnapshot snapshot = withLock(accountId, () -> {
+            Optional<String> replayed = idempotency.find(key);
+            if (replayed.isPresent()) {
+                return parse(replayed.get(), AccountSnapshot.class);
+            }
             AccountState state = eventStore.fold(accountId);
             if (!state.exists()) {
                 throw new AccountExceptions.NotFound("Account not found: " + accountId);
             }
             appendAndPublish(accountId, state.region(), List.of(
                     new Draft("MoneyDeposited", amountPayload(amount, deviceId, reference))), correlationId);
-            return null;
+            return eventStore.fold(accountId).snapshot();
         });
-        AccountSnapshot snapshot = eventStore.fold(accountId).snapshot();
         idempotency.save(key, toJson(snapshot));
         return snapshot;
     }
@@ -288,6 +310,10 @@ public class AccountService {
             return parse(replay.get(), AccountSnapshot.class);
         }
         AccountSnapshot snapshot = withLock(accountId, () -> {
+            Optional<String> replayed = idempotency.find(key);
+            if (replayed.isPresent()) {
+                return parse(replayed.get(), AccountSnapshot.class);
+            }
             AccountState state = requireActive(accountId);
             if (state.availableBalance().compareTo(amount) < 0) {
                 throw new AccountExceptions.Conflict("Insufficient funds");

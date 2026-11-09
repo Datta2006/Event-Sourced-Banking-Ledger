@@ -417,7 +417,7 @@ public class LoanService {
         return redisson.getScoredSortedSet(QUEUE_KEY, StringCodec.INSTANCE);
     }
 
-    private static double score(int tier, OffsetDateTime requestedAt) {
+    static double score(int tier, OffsetDateTime requestedAt) {
         return (3 - tier) * 10_000_000_000_000.0
                 + requestedAt.toInstant().toEpochMilli();
     }

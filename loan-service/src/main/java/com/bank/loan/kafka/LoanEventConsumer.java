@@ -1,44 +1,30 @@
 package com.bank.loan.kafka;
 
-import com.bank.loan.service.LoanService;
+import com.bank.loan.service.TrustTierService;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Kafka consumer for processing events relevant to the loan service.
- * Listens to trust-score.events to update local trust score cache.
+ * Maintains the local trust-tier cache from {@code trust-score.events}.
+ * Loan requests then read the cache synchronously, never the trust service (v2 §3.6).
  */
 @Component
 public class LoanEventConsumer {
 
-    private static final Logger logger = LoggerFactory.getLogger(LoanEventConsumer.class);
+    private static final Logger log = LoggerFactory.getLogger(LoanEventConsumer.class);
 
-    private final LoanService loanService;
+    private final TrustTierService trustTierService;
 
-    public LoanEventConsumer(LoanService loanService) {
-        this.loanService = loanService;
+    public LoanEventConsumer(TrustTierService trustTierService) {
+        this.trustTierService = trustTierService;
     }
 
-    /**
-     * Process trust score events to maintain local cache.
-     * In a full implementation, this would update a local cache
-     * that the loan service uses for prioritization.
-     */
     @KafkaListener(topics = "trust-score.events", groupId = "loan-service")
-    public void processTrustScoreEvent(Object event) {
-        logger.info("Received trust score event: {}", event);
-        // In a full implementation, we would update a local trust score cache here
-        // For now, we just log the event
-    }
-
-    /**
-     * Process loan events for monitoring/auditing.
-     */
-    @KafkaListener(topics = "loan.events", groupId = "loan-service")
-    public void processLoanEvent(Object event) {
-        logger.info("Received loan event: {}", event);
-        // For monitoring/auditing purposes
+    public void onTrustEvent(ConsumerRecord<String, String> record) {
+        log.debug("Trust event partition={} offset={}", record.partition(), record.offset());
+        trustTierService.apply(record.value());
     }
 }

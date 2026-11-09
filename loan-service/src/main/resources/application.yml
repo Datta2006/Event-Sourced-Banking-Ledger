@@ -1,20 +1,18 @@
 server:
   port: 8085
+  shutdown: graceful
 
 spring:
-  config:
-    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: loan-service
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/ledger}
-    username: ddbs
-    password: ddbs
-  jpa:
-    hibernate:
-      # schema is Flyway-managed (db/migration) — validate only, never mutate
-      ddl-auto: validate
-    show-sql: false
+    username: ${SPRING_DATASOURCE_USERNAME:ddbs}
+    password: ${SPRING_DATASOURCE_PASSWORD:ddbs}
+    hikari:
+      maximum-pool-size: 8
   flyway:
     locations: classpath:db/migration
     default-schema: loan
@@ -22,26 +20,37 @@ spring:
     create-schemas: true
     baseline-on-migrate: true
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     producer:
+      acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-    consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      group-id: loan-service
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
-        spring.json.trusted.packages: '*'
+        enable.idempotence: true
+    consumer:
+      group-id: loan-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
 
-# v2 §3: Redisson client against Valkey; provides RScoredSortedSet("loan:queue")
-# and the atomic Lua pop-and-debit of the admin pool balance.
 redisson:
   single-server-config:
-    address: "redis://localhost:6379"
+    address: ${REDISSON_ADDRESS:redis://localhost:6379}
+
+app:
+  pool:
+    # Seed balance for a fresh demo. Existing Redis state wins on restart.
+    initial-balance: ${LOAN_POOL_INITIAL_BALANCE:50000.00}
+  account-service:
+    url: ${ACCOUNT_SERVICE_URL:http://localhost:8081}
+  loan:
+    # 30-day term; repayments before day 7 count as "early".
+    term-days: ${LOAN_TERM_DAYS:30}
+    early-days: ${LOAN_EARLY_DAYS:7}
 
 eureka:
   client:
@@ -49,8 +58,20 @@ eureka:
       defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+  instance:
+    prefer-ip-address: true
 
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: always   # expose db/kafka/redis indicators for compose healthcheck + CI
+      show-details: always
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{ISO8601} %-5level [%X{correlationId:-no-correlation}] %logger{36} - %msg%n"

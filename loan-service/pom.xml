@@ -11,24 +11,22 @@
     </parent>
     <artifactId>loan-service</artifactId>
     <name>Loan Service</name>
-    <description>Loan requests ranked in a Valkey priority queue (RScoredSortedSet: trust tier, then FCFS arrival) and approved via an atomic Lua pop-and-debit of the admin pool (v2 §3).</description>
+    <description>Loan requests ranked in a Valkey priority queue (RScoredSortedSet: trust tier,
+        then FCFS) and approved via an atomic Lua pop-and-debit of the admin pool (v2 §3).</description>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
+            <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-        <!-- /actuator/health with DB health indicator (compose healthcheck + CI) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
-        <!-- JPA entities + repositories over the Flyway-managed schema -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
-        <!-- Flyway 10 split packaging: core + per-database module -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -41,7 +39,6 @@
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
-        <!-- v2 §3.3: RScoredSortedSet priority queue; v2 §3.4: atomic Lua pop-and-debit -->
         <dependency>
             <groupId>org.redisson</groupId>
             <artifactId>redisson-spring-boot-starter</artifactId>
@@ -54,6 +51,22 @@
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

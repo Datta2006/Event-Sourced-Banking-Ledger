@@ -1,22 +1,19 @@
 server:
   port: 8084
+  shutdown: graceful
 
 spring:
-  config:
-    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: notification-service
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   kafka:
-    bootstrap-servers: localhost:9092
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       group-id: notification-service
-      properties:
-        spring.json.trusted.packages: '*'
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   mail:
     host: ${SPRING_MAIL_HOST:localhost}
     port: ${SPRING_MAIL_PORT:1025}
@@ -27,9 +24,28 @@ spring:
           starttls:
             enable: false
 
+app:
+  notification:
+    from: ${NOTIFICATION_FROM:no-reply@ddbs-bank.example}
+    email-domain: ${NOTIFICATION_EMAIL_DOMAIN:example.com}
+    max-outbox: ${NOTIFICATION_MAX_OUTBOX:500}
+
 eureka:
   client:
     service-url:
       defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true

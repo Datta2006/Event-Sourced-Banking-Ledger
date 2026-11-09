@@ -1,7 +1,19 @@
 import { useEffect, useState } from 'react';
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useNavigate,
+  useParams,
+} from 'react-router-dom';
 import { api } from './api/client';
+import { isLive } from './api/base';
 import { mockApi } from './mock/server';
 import { usePoll } from './lib/poll';
+import { clearSession, getSession, type AuthRole } from './auth';
+import { LoginPage } from './LoginPage';
 
 // customer screens
 import { Dashboard } from './screens/customer/Dashboard';
@@ -27,7 +39,7 @@ import { Fragmentation } from './screens/bank/Fragmentation';
 
 type Role = 'customer' | 'bank';
 
-const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
+const live = () => (isLive ? api : mockApi);
 
 type NavItem = {
   key: string;
@@ -62,45 +74,104 @@ const BANK_NAV: NavItem[] = [
 ];
 
 const NAVS: Record<Role, NavItem[]> = { customer: CUSTOMER_NAV, bank: BANK_NAV };
+const HOME: Record<Role, string> = { customer: 'dashboard', bank: 'ops' };
 
 export default function App() {
-  const [role, setRole] = useState<Role>('customer');
-  const [screen, setScreen] = useState('dashboard');
-  const [accountId, setAccountId] = useState('a1');
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     (localStorage.getItem('lt-theme') as 'light' | 'dark') ?? 'light',
   );
-
-  const { data: accounts } = usePoll(() => live().listAccounts(), 10000);
-  const mine = accounts?.find((a) => a.accountId === accountId);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('lt-theme', theme);
   }, [theme]);
 
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Navigate to="/customer/dashboard" replace />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/:role/:screen"
+          element={
+            <Portal
+              theme={theme}
+              toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            />
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+function Portal({ theme, toggleTheme }: { theme: 'light' | 'dark'; toggleTheme: () => void }) {
+  const params = useParams<{ role: string; screen: string }>();
+  const navigate = useNavigate();
+  const session = getSession();
+
+  const roleParam: Role | undefined =
+    params.role === 'customer' || params.role === 'bank' ? params.role : undefined;
+  const expectedRole: AuthRole | undefined =
+    roleParam === 'bank' ? 'BANK' : roleParam === 'customer' ? 'CUSTOMER' : undefined;
+
+  const role: Role = isLive && session ? (session.role === 'BANK' ? 'bank' : 'customer') : roleParam ?? 'customer';
+  const nav = NAVS[role];
+  const current = nav.find((n) => n.key === params.screen) ?? nav[0];
+
+  const [accountId, setAccountId] = useState<string>(
+    isLive ? session?.accountId ?? '' : 'a1',
+  );
+  const { data: accounts } = usePoll(() => live().listAccounts(), 10000);
+
+  useEffect(() => {
+    if (!isLive || !accounts || accounts.length === 0) return;
+    if (!accounts.some((a) => a.accountId === accountId)) {
+      const preferred = session?.accountId
+        && accounts.some((a) => a.accountId === session.accountId)
+        ? session.accountId
+        : accounts[0].accountId;
+      setAccountId(preferred);
+    }
+  }, [accounts, accountId, session?.accountId]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
       const idx = Number(e.key) === 0 ? 9 : Number(e.key) - 1;
-      const nav = NAVS[role];
       if (idx >= 0 && idx < nav.length) {
         e.preventDefault();
-        setScreen(nav[idx].key);
+        navigate(`/${role}/${nav[idx].key}`);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [role]);
+  }, [role, nav, navigate]);
 
-  // role switch lands on that role's first screen
-  const switchRole = (r: Role) => {
-    setRole(r);
-    setScreen(NAVS[r][0].key);
+  if (isLive && !session) {
+    return <Navigate to="/login" replace />;
+  }
+  if (isLive && expectedRole && session && session.role !== expectedRole) {
+    return <Navigate to={`/${session.role.toLowerCase()}/${HOME[session.role === 'BANK' ? 'bank' : 'customer']}`} replace />;
+  }
+  if (!roleParam) {
+    return <Navigate to={`/${role}/${HOME[role]}`} replace />;
+  }
+  if (params.screen !== current.key) {
+    return <Navigate to={`/${role}/${current.key}`} replace />;
+  }
+
+  const mine = accounts?.find((a) => a.accountId === accountId);
+  const switchPortal = () => {
+    if (isLive) {
+      clearSession();
+      navigate('/login?switch=1');
+      return;
+    }
+    const next: Role = role === 'customer' ? 'bank' : 'customer';
+    navigate(`/${next}/${HOME[next]}`);
   };
-
-  const nav = NAVS[role];
-  const current = nav.find((n) => n.key === screen) ?? nav[0];
 
   return (
     <div className="shell">
@@ -111,18 +182,20 @@ export default function App() {
         </div>
 
         <div className="role-switch" role="tablist" aria-label="Portal">
-          <button
+          <Link
             className={role === 'customer' ? 'role-btn active' : 'role-btn'}
-            onClick={() => switchRole('customer')}
+            to={isLive ? '/login?switch=1' : '/customer/dashboard'}
+            onClick={isLive ? (e) => { e.preventDefault(); switchPortal(); } : undefined}
           >
             Customer
-          </button>
-          <button
+          </Link>
+          <Link
             className={role === 'bank' ? 'role-btn active' : 'role-btn'}
-            onClick={() => switchRole('bank')}
+            to={isLive ? '/login?switch=1' : '/bank/ops'}
+            onClick={isLive ? (e) => { e.preventDefault(); switchPortal(); } : undefined}
           >
             Bank
-          </button>
+          </Link>
         </div>
 
         {role === 'customer' && accounts && accounts.length > 0 && (
@@ -144,22 +217,25 @@ export default function App() {
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {nav.map((n) => (
-            <a
+            <Link
               key={n.key}
-              href={`#${role}/${n.key}`}
+              to={`/${role}/${n.key}`}
               className={`nav-item ${current.key === n.key ? 'active' : ''}`}
-              onClick={(e) => {
-                e.preventDefault();
-                setScreen(n.key);
-              }}
             >
               <span className="nav-label">{n.label}</span>
               <span className="nav-key">{n.hint}</span>
-            </a>
+            </Link>
           ))}
         </nav>
 
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 'var(--sp-sm)' }}>
+          {session && (
+            <div className="section-note" style={{ fontSize: 10.5, lineHeight: 1.5 }}>
+              {session.displayName}
+              <br />
+              {session.role} · JWT session
+            </div>
+          )}
           {mine && (
             <div className="section-note" style={{ fontSize: 10.5, lineHeight: 1.5 }}>
               {mine.holderName} · {mine.region}
@@ -167,17 +243,25 @@ export default function App() {
               KYC {mine.kycStatus} · {mine.status}
             </div>
           )}
-          <button
-            className="btn"
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-            title="Toggle console theme"
-          >
+          <button className="btn" onClick={toggleTheme} title="Toggle console theme">
             {theme === 'light' ? '◐ Console' : '◑ Paper'}
           </button>
-          <div className="section-note" style={{ fontSize: 10.5, lineHeight: 1.5 }}>
-            Contract-first UI ·<br />
-            types from docs/api_spec/*.yaml
-          </div>
+          {isLive ? (
+            <button
+              className="btn"
+              onClick={() => {
+                clearSession();
+                navigate('/login', { replace: true });
+              }}
+            >
+              Sign out
+            </button>
+          ) : (
+            <div className="section-note" style={{ fontSize: 10.5, lineHeight: 1.5 }}>
+              Mock transport ·<br />
+              set VITE_API_BASE for the live bank
+            </div>
+          )}
         </div>
       </aside>
       <main className="main" key={`${role}-${current.key}`}>

@@ -1,39 +1,60 @@
 server:
   port: 8080
+  shutdown: graceful
 
 spring:
   application:
     name: api-gateway
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   cloud:
     gateway:
       discovery:
         locator:
           enabled: false
-      # The frontend calls /api/<segment>/... — strip the /api prefix, then
-      # route by the next segment to the owning service (lb:// = Eureka).
+      # Browser calls /api/<segment>/...; strip /api, then route by owner.
+      # Account reads live in the CQRS read model (ledger-query); writes live
+      # in account-command. Audit verification is the one GET that must reach
+      # the write side.
       routes:
-        - id: account-command
+        - id: account-command-writes
           uri: lb://account-command-service
           predicates:
             - Path=/api/accounts/**,/api/transfers/**
+            - Method=POST
           filters:
             - StripPrefix=1
-        - id: ledger-query
+        - id: account-command-audit
+          uri: lb://account-command-service
+          predicates:
+            - Path=/api/accounts/*/audit/verify
+            - Method=GET
+          filters:
+            - StripPrefix=1
+        - id: ledger-query-reads
           uri: lb://ledger-query-service
           predicates:
-            - Path=/api/ledger/**,/api/events/**,/api/transactions/**
+            - Path=/api/accounts/**,/api/events/**,/api/transactions/**,/api/ops/**
+            - Method=GET
           filters:
             - StripPrefix=1
-        - id: loan
-          uri: lb://loan-service
+        - id: payment-online
+          uri: lb://payment-reservation-service
           predicates:
-            - Path=/api/loans/**
+            - Path=/api/payments
+            - Method=POST
           filters:
             - StripPrefix=1
         - id: payment-reservation
           uri: lb://payment-reservation-service
           predicates:
             - Path=/api/reservations/**
+          filters:
+            - StripPrefix=1
+        - id: loan
+          uri: lb://loan-service
+          predicates:
+            - Path=/api/loans/**
           filters:
             - StripPrefix=1
         - id: trust-score
@@ -55,6 +76,23 @@ spring:
           filters:
             - StripPrefix=1
 
+app:
+  auth:
+    enabled: ${AUTH_ENABLED:true}
+    secret: ${AUTH_JWT_SECRET:ddbs-demo-secret-change-me-please-32b}
+    issuer: ${AUTH_JWT_ISSUER:ddbs-api-gateway}
+    ttl-minutes: ${AUTH_TTL_MINUTES:480}
+    users:
+      - username: ${AUTH_CUSTOMER_USER:customer}
+        password: ${AUTH_CUSTOMER_PASSWORD:customer123}
+        role: CUSTOMER
+        account-id: ${AUTH_CUSTOMER_ACCOUNT:11111111-1111-1111-1111-111111111111}
+        display-name: ${AUTH_CUSTOMER_NAME:Asha Rao}
+      - username: ${AUTH_BANK_USER:bank}
+        password: ${AUTH_BANK_PASSWORD:bank123}
+        role: BANK
+        display-name: ${AUTH_BANK_NAME:Bank Operations}
+
 eureka:
   client:
     service-url:
@@ -66,7 +104,12 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,gateway
+        include: health,info,gateway,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
 
 logging:
   level:

@@ -2,6 +2,8 @@ package com.bank.gateway;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import com.bank.gateway.config.AuthProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.CorsWebFilter;
@@ -20,6 +22,7 @@ import java.util.List;
  * behavior — the gateway never strips unrecognized headers).
  */
 @SpringBootApplication
+@EnableConfigurationProperties(AuthProperties.class)
 public class ApiGatewayApplication {
     public static void main(String[] args) {
         SpringApplication.run(ApiGatewayApplication.class, args);

@@ -23,8 +23,10 @@ import type {
   TrustScoreChangeView,
   TrustScoreView,
 } from './contract';
+import { API_BASE } from './base';
+import { getSession } from '../auth';
 
-const BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8080';
+const BASE = API_BASE || 'http://localhost:8080';
 
 export class ApiError extends Error {
   status: number;
@@ -39,9 +41,11 @@ async function request<T>(
   path: string,
   init?: RequestInit & { json?: unknown },
 ): Promise<T> {
+  const session = getSession();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Idempotency-Key': crypto.randomUUID(),
+    ...(session ? { Authorization: `Bearer ${session.token}` } : {}),
     ...(init?.headers as Record<string, string> | undefined),
   };
   let body: string | undefined;

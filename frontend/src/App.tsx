@@ -25,6 +25,7 @@ import { MyLoans } from './screens/customer/MyLoans';
 import { TrustScore } from './screens/customer/TrustScore';
 import { Notifications } from './screens/customer/Notifications';
 import { FraudAlerts } from './screens/customer/FraudAlerts';
+import { OpenAccount } from './screens/customer/OpenAccount';
 // bank screens
 import { OpsDashboard } from './screens/bank/OpsDashboard';
 import { LoanQueue } from './screens/bank/LoanQueue';
@@ -50,6 +51,7 @@ type NavItem = {
 
 const CUSTOMER_NAV: NavItem[] = [
   { key: 'dashboard', label: 'Accounts', hint: '1', render: ({ accountId }) => <Dashboard accountId={accountId} /> },
+  { key: 'open-account', label: 'Open account', hint: '0', render: ({ accountId }) => <OpenAccount /> },
   { key: 'statement', label: 'Statement', hint: '2', render: ({ accountId }) => <Statement accountId={accountId} /> },
   { key: 'transfer', label: 'Transfer', hint: '3', render: ({ accountId }) => <Transfer accountId={accountId} /> },
   { key: 'offline', label: 'Offline payment', hint: '4', render: ({ accountId }) => <OfflinePayment accountId={accountId} /> },
@@ -139,11 +141,21 @@ function Portal({ theme, toggleTheme }: { theme: 'light' | 'dark'; toggleTheme: 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-      const idx = Number(e.key) === 0 ? 9 : Number(e.key) - 1;
-      if (idx >= 0 && idx < nav.length) {
-        e.preventDefault();
-        navigate(`/${role}/${nav[idx].key}`);
+      const keyNum = Number(e.key);
+      if (isNaN(keyNum) && e.key !== '0') return;
+      let idx: number;
+      if (keyNum === 0) {
+        // Find the item with hint '0' for this role
+        idx = nav.findIndex(n => n.hint === '0');
+        if (idx < 0) return;
+      } else if (keyNum >= 1 && keyNum <= 9) {
+        idx = nav.findIndex(n => n.hint === String(keyNum));
+        if (idx < 0) return;
+      } else {
+        return;
       }
+      e.preventDefault();
+      navigate(`/${role}/${nav[idx].key}`);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

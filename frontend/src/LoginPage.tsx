@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { clearSession, getSession, login, setSession } from './auth';
 import { isLive } from './api/base';
 
@@ -97,12 +97,28 @@ export function LoginPage() {
         </form>
 
         <div style={{ display: 'flex', gap: 8, marginTop: 'var(--sp-lg)' }}>
-          <button className="btn" type="button" onClick={() => fill('CUSTOMER')}>
-            Fill customer demo
+          <button className="btn btn-primary" type="button" onClick={() => fill('CUSTOMER')}>
+            Customer Login
           </button>
           <button className="btn" type="button" onClick={() => fill('BANK')}>
-            Fill bank demo
+            Bank Admin Login
           </button>
+        </div>
+
+        <div style={{ marginTop: 'var(--sp-lg)', padding: 'var(--sp-md)', background: 'var(--bg-subtle)', borderRadius: 8 }}>
+          <div className="eyebrow" style={{ marginTop: 0 }}>Demo Accounts</div>
+          <div style={{ display: 'grid', gap: 'var(--sp-sm)', marginTop: 'var(--sp-sm)' }}>
+            <div>
+              <strong>Customer:</strong> customer / customer123
+              <br />
+              <span style={{ color: 'var(--muted)', fontSize: 13 }}>Account: 11111111-1111-1111-1111-111111111111</span>
+            </div>
+            <div>
+              <strong>Bank Admin:</strong> bank / bank123
+              <br />
+              <span style={{ color: 'var(--muted)', fontSize: 13 }}>Full system access across all accounts</span>
+            </div>
+          </div>
         </div>
 
         {existing && (
@@ -116,6 +132,22 @@ export function LoginPage() {
           >
             Sign out of {existing.displayName}
           </button>
+        )}
+
+        {isLive && !existing && (
+          <div style={{ marginTop: 'var(--sp-lg)', padding: 'var(--sp-md)', background: 'var(--bg-subtle)', borderRadius: 8 }}>
+            <div className="eyebrow" style={{ marginTop: 0 }}>New to Meridian?</div>
+            <div style={{ marginTop: 'var(--sp-sm)' }}>
+              <Link to="/customer/open-account" style={{ textDecoration: 'none' }}>
+                <button className="btn btn-primary" type="button" style={{ width: '100%' }}>
+                  Open your first account
+                </button>
+              </Link>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, textAlign: 'center' }}>
+                Create an account with an initial deposit
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

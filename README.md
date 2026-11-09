@@ -146,10 +146,46 @@ Expected output: All services marked `Up` and `healthy`.
 
 The first time you run the system, seeds are created automatically. Pre-seeded demo accounts:
 
-```bash
-# Customer: customer/customer123 → Account: 11111111-1111-1111-1111-111111111111
-# Bank: bank/bank123
+#### Customer Portal Login
 ```
+Username: customer
+Password: customer123
+Account ID: 11111111-1111-1111-1111-111111111111
+Initial Balance: ₹100,000
+```
+
+#### Bank Portal Login (Admin)
+```
+Username: bank
+Password: bank123
+Role: BANK
+Access: All accounts, loan queue, fraud review, system ops
+```
+
+#### Login Page Access
+- **Customer Portal**: http://localhost:3000/login (or http://localhost:5173/login in dev mode)
+- Use role-based login to access different portals
+- Bank users see admin dashboard with full system visibility
+
+### Frontend Quick Start
+
+```bash
+# Run in mock mode (no backend required, uses demo data)
+./scripts/demo/run-frontend.sh
+
+# Or with live backend (requires Docker Compose running)
+./scripts/demo/run-frontend.sh --live
+
+# Access at http://localhost:5173
+```
+
+See `frontend/README.md` for detailed frontend documentation.
+
+### New Feature: Open Account
+- Visit `/customer/open-account` to create a new account
+- Select region (APAC/EU/AMER) for horizontal sharding
+- Initial deposit sets starting balance
+- New accounts get KYC status: PENDING → VERIFIED (requires bank admin)
 
 ### 5. Run Demo Proofs
 
@@ -218,6 +254,15 @@ npm run dev
 
 # Access at http://localhost:5173
 ```
+
+Or use the convenience script:
+```bash
+./scripts/demo/run-frontend.sh
+```
+
+The frontend supports two modes:
+- **Mock Mode** (default): Works without backend, uses simulated data
+- **Live Mode**: Set `VITE_API_BASE=http://localhost:8080` for real backend
 
 ### CI/CD Pipeline
 

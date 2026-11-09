@@ -1,32 +1,147 @@
-# React + TypeScript + Vite
+# Meridian Banking Portal
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A modern React frontend for the Event-Sourced Banking Ledger (DDBS) project.
 
-Currently, two official plugins are available:
+## 🚀 Quick Start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+# Install dependencies
+npm install
 
-## React Compiler
+# Start development server (http://localhost:5173)
+npm run dev
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+# Build for production
+npm run build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## 🔐 Login Credentials
+
+### Customer Portal
+- **Username:** `customer`
+- **Password:** `customer123`
+- **Account:** `11111111-1111-1111-1111-111111111111`
+- **Initial Balance:** ₹100,000
+
+### Bank Admin Portal
+- **Username:** `bank`
+- **Password:** `bank123`
+- **Role:** BANK
+- **Access:** Full system administration (all accounts, loan queue, fraud review, system ops)
+
+## 🌐 Portal URLs
+
+| Portal | URL | Description |
+|--------|-----|-------------|
+| Customer Login | http://localhost:5173/login | Customer-facing portal |
+| Customer Dashboard | http://localhost:5173/customer/dashboard | Account overview |
+| Bank Admin | http://localhost:5173/bank/ops | Full system visibility |
+
+## 🔧 Configuration
+
+### Environment Variables
+
+Set these in your `.env` file or pass to Docker:
+
+```bash
+# API Gateway base URL (for real backend)
+VITE_API_BASE=http://localhost:8080
+
+# Without VITE_API_BASE, the app runs in mock mode with demo data
+```
+
+### Mock Mode (Default)
+
+When `VITE_API_BASE` is not set:
+- The app runs with a simulated backend
+- Multiple demo accounts are pre-loaded
+- Simulated event stream, transfers, and loan queue
+- Perfect for demonstrations without running Docker
+
+### Live Mode
+
+When `VITE_API_BASE=http://localhost:8080`:
+- Connects to real backend services
+- Requires Docker Compose stack to be running
+- Real-time data from Kafka and PostgreSQL
+
+## 🏗️ Project Structure
+
+```
+src/
+├── api/           # API client and type definitions
+│   ├── client.ts  # Real API calls
+│   ├── base.ts    # API_BASE configuration
+│   └── specs/     # Generated OpenAPI types
+├── screens/       # Page components
+│   ├── customer/  # Customer-facing screens
+│   └── bank/      # Bank admin screens
+├── components/    # Reusable UI components
+├── lib/           # Utility libraries
+├── auth.ts        # JWT session management
+└── App.tsx        # Main router and layout
+```
+
+## 🎮 Navigation (Keyboard Shortcuts)
+
+In the customer portal:
+- `1` - Accounts (Dashboard)
+- `0` - Open Account
+- `2` - Statement
+- `3` - Transfer
+- `4` - Offline Payment
+- `5` - Apply for Loan
+- `6` - My Loans
+- `7` - Trust Score
+- `8` - Fraud Alerts
+- `9` - Notifications
+
+In the bank portal:
+- `1-0` - Navigate to respective admin screens
+
+## 📱 Features
+
+### Customer Features
+- View account balance and transaction history
+- Transfer money between accounts
+- Apply for and manage loans
+- View fraud alerts
+- Generate offline payment tokens
+- Track trust score and KYC status
+
+### Bank Features
+- System operations dashboard
+- Loan queue management (trust-tier based priority)
+- Admin pool management
+- Fraud case review
+- Account management
+- Reservations overview
+- Service health monitoring
+
+## 🧪 Demo Mode
+
+Run without backend:
+```bash
+npm run dev
+# Visit http://localhost:5173
+# Click "Fill customer demo" or "Fill bank demo" on login page
+```
+
+Run with backend:
+```bash
+# Terminal 1: Start backend
+docker compose up -d
+
+# Terminal 2: Start frontend  
+cd frontend && npm run dev
+# Visit http://localhost:5173
+# Use demo credentials above
+```
+
+## 🎨 Design System
+
+- **Theme:** Light/Dark toggle
+- **Typography:** Satoshi (display), IBM Plex Sans (body), IBM Plex Mono (numbers)
+- **Colors:** Green/amber status badges, amber warnings, credit/debit color coding
+- **Motion:** Smooth transitions with CSS variables
+- **Layout:** Fixed sidebar, main content area, 2-column grid on wide screens

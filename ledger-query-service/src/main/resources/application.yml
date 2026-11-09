@@ -1,35 +1,49 @@
 server:
   port: 8082
+  shutdown: graceful
 
 spring:
-  config:
-    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: ledger-query-service
-  # Read-model store: MongoDB wire-compatible; swap URI to FerretDB (ferretdb:27017)
-  # without code changes if the team picks the Apache-2.0 option (docs/OPEN_DECISIONS.md).
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
+  # Read model (ADR-002): MongoDB-wire-compatible. Point this at FerretDB in
+  # compose; a plain MongoDB instance works unchanged.
   data:
     mongodb:
       uri: ${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/ddbs}
-  # v2 §7: ShardingSphere Driver for region-sharded ledger_events reads (replay/recovery).
-  # Config file to be added when the fragmentation retrofit lands (v2 §9, step 6).
-  # Direct Postgres read for replay/recovery — ShardingSphere retrofit comes later
-  # (v2 §9 step 6). Schema owned by account-command-service; no Flyway here.
+      auto-index-creation: true
+  # Coordinator database: only used for the account→region directory during replay.
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/ledger}
-    username: ddbs
-    password: ddbs
+    username: ${SPRING_DATASOURCE_USERNAME:ddbs}
+    password: ${SPRING_DATASOURCE_PASSWORD:ddbs}
+    hikari:
+      maximum-pool-size: 4
   kafka:
-    bootstrap-servers: localhost:9092
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       group-id: ledger-query-service
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       properties:
         spring.json.trusted.packages: '*'
+        max.poll.records: 100
+
+app:
+  shards:
+    APAC: ${SHARD_APAC_URL:jdbc:postgresql://localhost:5433/ddbs_apac}
+    EU:   ${SHARD_EU_URL:jdbc:postgresql://localhost:5433/ddbs_eu}
+    AMER: ${SHARD_AMER_URL:jdbc:postgresql://localhost:5433/ddbs_amer}
+  db:
+    username: ${SHARD_DB_USERNAME:ddbs}
+    password: ${SHARD_DB_PASSWORD:ddbs}
+  replay:
+    # Rebuild the read model from the sharded event store on boot when the
+    # accounts collection is empty (fresh FerretDB / disaster recovery).
+    on-startup-if-empty: ${REPLAY_ON_STARTUP:true}
 
 eureka:
   client:
@@ -37,8 +51,20 @@ eureka:
       defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+  instance:
+    prefer-ip-address: true
 
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: always   # expose mongo/db/kafka indicators for compose healthcheck + CI
+      show-details: always
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{ISO8601} %-5level [%X{correlationId:-no-correlation}] %logger{36} - %msg%n"

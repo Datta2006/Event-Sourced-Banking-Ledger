@@ -11,17 +11,22 @@
     </parent>
     <artifactId>ledger-query-service</artifactId>
     <name>Ledger Query Service</name>
-    <description>Consumes account events from Kafka and maintains the read model (MongoDB, with FerretDB/Postgres-JSONB as the open-license swap — see docs/OPEN_DECISIONS.md). Reads the region-sharded ledger via ShardingSphere-JDBC for replay and recovery (v2 §7).</description>
+    <description>Consumes domain events from Kafka into an idempotent MongoDB/FerretDB read model,
+        serves account/transaction/event queries, replays the region-sharded event store, and
+        exposes the System Ops facade.</description>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-        <!-- /actuator/health incl. Mongo + DataSource indicators (compose healthcheck) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>
@@ -31,11 +36,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-mongodb</artifactId>
         </dependency>
-        <!-- v2 §7: reads the region-sharded ledger_events through ShardingSphere-JDBC -->
-        <dependency>
-            <groupId>org.apache.shardingsphere</groupId>
-            <artifactId>shardingsphere-jdbc</artifactId>
-        </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -44,6 +44,22 @@
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mongodb</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

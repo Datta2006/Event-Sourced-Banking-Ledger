@@ -1,51 +1,58 @@
 server:
   port: 8081
+  shutdown: graceful
 
 spring:
-  config:
-    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
   application:
     name: account-command-service
-  # v2 §7: ShardingSphere Driver routes logical INSERTs into ledger_events to the
-  # region shard (ds_apac / ds_eu / ds_amer) selected by the registration-IP region.
-  # Config file to be added when the fragmentation retrofit lands (v2 §9, step 6).
+  config:
+    import: optional:configserver:${SPRING_CONFIG_IMPORT:http://localhost:8888}
+  # Coordinator database: idempotency keys, transfer saga state, account→region directory.
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/ledger}
-    username: ddbs
-    password: ddbs
-  jpa:
-    hibernate:
-      # schema is Flyway-managed (db/migration) — validate only, never mutate
-      ddl-auto: validate
-    show-sql: false
-  flyway:
-    locations: classpath:db/migration
-    default-schema: account_command
-    schemas: account_command
-    create-schemas: true
-    baseline-on-migrate: true
-  # v2 §5: withdrawal commands arrive on a Kafka partition keyed by accountId,
-  # so a single consumer instance applies them in broker-received (FCFS) order.
+    username: ${SPRING_DATASOURCE_USERNAME:ddbs}
+    password: ${SPRING_DATASOURCE_PASSWORD:ddbs}
+    hikari:
+      maximum-pool-size: 10
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     producer:
+      acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-    consumer:
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      group-id: account-command-service
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
-        spring.json.trusted.packages: '*'
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+    consumer:
+      group-id: account-command-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
 
-# v2 §5.2: Redisson client against Valkey; provides RFairLock("account-lock:" + accountId).
 redisson:
   single-server-config:
-    address: "redis://localhost:6379"
+    address: ${REDISSON_ADDRESS:redis://localhost:6379}
+
+app:
+  shards:
+    APAC: ${SHARD_APAC_URL:jdbc:postgresql://localhost:5433/ddbs_apac}
+    EU:   ${SHARD_EU_URL:jdbc:postgresql://localhost:5433/ddbs_eu}
+    AMER: ${SHARD_AMER_URL:jdbc:postgresql://localhost:5433/ddbs_amer}
+  db:
+    username: ${SHARD_DB_USERNAME:ddbs}
+    password: ${SHARD_DB_PASSWORD:ddbs}
+  saga:
+    # Demo hook: pause between source debit and target credit so a script can kill
+    # the process and prove startup recovery. 0 in normal operation.
+    pause-after-source-ms: ${SAGA_PAUSE_AFTER_SOURCE_MS:0}
+  region:
+    default: APAC
+  jwt:
+    # Gateway validates tokens; services only consume the injected caller headers.
 
 eureka:
   client:
@@ -53,8 +60,23 @@ eureka:
       defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka/}
     fetch-registry: true
     register-with-eureka: true
+  instance:
+    prefer-ip-address: true
 
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: always   # expose db/kafka/redis indicators for compose healthcheck + CI
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    redis:
+      enabled: false
+
+logging:
+  pattern:
+    console: "%d{ISO8601} %-5level [%X{correlationId:-no-correlation}] %logger{36} - %msg%n"

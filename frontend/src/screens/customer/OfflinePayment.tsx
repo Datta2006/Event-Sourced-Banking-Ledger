@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ReservationView } from '../../api/contract';
 import { Section, StatusBadge, ErrorNote } from '../../components/ui';
-import { moneyINR, time, ago } from '../../lib/format';
+import { moneyINR, time } from '../../lib/format';
 import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
@@ -197,7 +197,7 @@ export function OfflinePayment({ accountId }: { accountId: string }) {
                 <td className="mono">{r.reservationId.slice(0, 8)}…</td>
                 <td className="num">{moneyINR(r.amount)}</td>
                 <td><StatusBadge status={r.status} /></td>
-                <td className="mono" style={{ color: 'var(--muted)' }}>{ago(r.expiresAt)}</td>
+                <td className="mono" style={{ color: 'var(--muted)' }}>{time(r.expiresAt)}</td>
               </tr>
             ))}
             {mine && mine.length === 0 && (

@@ -74,6 +74,23 @@
   --accent-bg: rgba(62, 165, 116, 0.1);
 }
 
+/* Portal identity: customer = ledger green, bank = operations violet.
+   Semantic tokens (credit/debit/warning/info) stay shared across portals. */
+[data-portal='bank'] {
+  --accent: #7c3aed;
+  --accent-ink: #ffffff;
+  --accent-bg: rgba(124, 58, 237, 0.08);
+  --credit: #1e7a46;
+  --portal-name-bar: 56px;
+}
+
+[data-portal='bank'][data-theme='dark'] {
+  --accent: #9d7ad6;
+  --accent-ink: #0e1116;
+  --accent-bg: rgba(157, 122, 214, 0.14);
+  --credit: #4cba83;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -595,4 +612,476 @@ a {
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ============================================================
+   Demo portal chrome — login + sidebar shells
+   ============================================================ */
+.login-page {
+  min-height: 100vh;
+  padding: 28px clamp(20px, 5vw, 64px) 48px;
+  background:
+    radial-gradient(900px 500px at 12% -10%, var(--accent-bg), transparent 70%),
+    radial-gradient(700px 420px at 100% 0%, var(--info-bg), transparent 65%),
+    var(--paper);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.login-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-lg);
+  position: relative;
+  z-index: 1;
+  width: min(1100px, 100%);
+  margin: 0 auto var(--sp-xl);
+}
+
+.login-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  width: min(1100px, 100%);
+  margin: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 24px 70px -48px rgba(25, 28, 31, 0.55);
+  overflow: hidden;
+}
+
+.login-hero {
+  padding: clamp(28px, 4vw, 52px);
+  border-right: 1px solid var(--hairline);
+}
+
+.login-hero h1 {
+  font-size: clamp(32px, 4vw, 46px);
+  line-height: 1.02;
+  margin-top: var(--sp-sm);
+  letter-spacing: -0.035em;
+}
+
+.login-hero > p {
+  max-width: 48ch;
+  margin: var(--sp-md) 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.login-role-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-md);
+  margin-top: var(--sp-2xl);
+}
+
+.login-role {
+  appearance: none;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+  min-height: 170px;
+  padding: var(--sp-lg);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-md);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition:
+    transform var(--dur-short) var(--ease-enter),
+    border-color var(--dur-short) var(--ease-enter),
+    background var(--dur-short) var(--ease-enter);
+}
+
+.login-role:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.login-role.customer:hover:not(:disabled) {
+  border-color: #17603f;
+  background: rgba(23, 96, 63, 0.07);
+}
+
+.login-role.bank:hover:not(:disabled) {
+  border-color: #7c3aed;
+  background: rgba(124, 58, 237, 0.07);
+}
+
+.login-role-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.login-role-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 9999px;
+  background: #17603f;
+  box-shadow: 0 0 0 4px rgba(23, 96, 63, 0.12);
+}
+
+.login-role-dot.bank {
+  background: #7c3aed;
+  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.12);
+}
+
+.login-role-body {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  flex: 1;
+}
+
+.login-role-cta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.login-role.customer .login-role-cta {
+  color: #17603f;
+}
+
+.login-role.bank .login-role-cta {
+  color: #7c3aed;
+}
+
+.login-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-xl);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.login-hint code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  padding: 3px 7px;
+  color: var(--ink);
+}
+
+.login-form-panel {
+  padding: clamp(24px, 3vw, 40px);
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+}
+
+.login-form-panel h2 {
+  font-size: 22px;
+  margin-top: var(--sp-xs);
+  margin-bottom: var(--sp-xl);
+}
+
+.login-form-panel form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.login-form-panel .field input {
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.login-submit {
+  margin-top: var(--sp-sm);
+  width: 100%;
+}
+
+.login-fill-row {
+  display: flex;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-md);
+}
+
+.login-fill-row .btn {
+  flex: 1;
+}
+
+.login-demo-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: var(--sp-xl);
+  padding: var(--sp-md);
+  border: 1px dashed var(--hairline-strong);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.login-demo-note strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.login-demo-note .mono {
+  color: var(--accent);
+  font-size: 11.5px;
+}
+
+.login-signout {
+  margin-top: auto;
+  width: 100%;
+}
+
+/* ---- sidebar portal shell ---- */
+.portal-shell {
+  background: var(--paper);
+}
+
+.sidebar {
+  width: 258px;
+  gap: var(--sp-sm);
+  overflow: hidden;
+}
+
+.portal-brand {
+  margin-bottom: var(--sp-xs);
+}
+
+.brand-stack {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.brand-stack small {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.portal-mode-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: var(--sp-xs);
+}
+
+.portal-mode-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.sidebar-field {
+  margin: var(--sp-xs) 0;
+}
+
+.sidebar-field select {
+  font-size: 11.5px;
+  padding: 6px 8px;
+}
+
+.acting-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: var(--sp-xs) 0;
+  padding: var(--sp-md);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.acting-card strong {
+  font-size: 13px;
+}
+
+.acting-card .mono {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.acting-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.acting-badges .badge {
+  font-size: 9px;
+  padding: 1px 6px;
+}
+
+.portal-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: var(--sp-sm);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.portal-nav .nav-item {
+  font-size: 12.5px;
+  padding: 6px 9px;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: var(--sp-md);
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+}
+
+.session-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  min-width: 0;
+}
+
+.session-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.session-chip > span:last-child {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.session-chip strong {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-chip small {
+  font-size: 9.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-xs);
+}
+
+.btn-compact {
+  font-size: 11px;
+  padding: 5px 8px;
+}
+
+.portal-shell .main {
+  padding: var(--sp-2xl) clamp(24px, 3.5vw, 48px) var(--sp-3xl);
+  animation: portal-in var(--dur-medium) var(--ease-enter) both;
+}
+
+@keyframes portal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 960px) {
+  .login-card {
+    grid-template-columns: 1fr;
+  }
+
+  .login-hero {
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .login-role-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    width: 64px;
+    padding: var(--sp-lg) var(--sp-xs);
+  }
+
+  .portal-brand .brand-stack,
+  .portal-mode-pill,
+  .sidebar-field,
+  .acting-card,
+  .session-chip,
+  .nav-label {
+    display: none;
+  }
+
+  .sidebar-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .portal-nav .nav-item {
+    justify-content: center;
+  }
+
+  .nav-key {
+    margin-left: 0;
+  }
 }

@@ -20,8 +20,8 @@ npm run build
 ### Customer Portal
 - **Username:** `customer`
 - **Password:** `customer123`
-- **Account:** `11111111-1111-1111-1111-111111111111`
-- **Initial Balance:** ₹100,000
+- **Account:** `a01` (Aarav Sharma)
+- **Initial Balance:** ₹48,250.50
 
 ### Bank Admin Portal
 - **Username:** `bank`
@@ -53,9 +53,10 @@ VITE_API_BASE=http://localhost:8080
 ### Mock Mode (Default)
 
 When `VITE_API_BASE` is not set:
-- The app runs with a simulated backend
-- Multiple demo accounts are pre-loaded
-- Simulated event stream, transfers, and loan queue
+- The app runs fully offline with a deterministic in-memory backend
+- 36 fixed accounts across APAC, EU and AMER, with fixed events, loans and reservations
+- Clicking actions (transfer, loan, reservation, fraud review) updates the demo data immediately
+- No random data and no background simulation — every reload starts from the same seed
 - Perfect for demonstrations without running Docker
 
 ### Live Mode

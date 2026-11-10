@@ -5,18 +5,9 @@ import { ago } from '../../lib/format';
 import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
+import { PageHeader } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
-
-export function PageHeader({ eyebrow, title, sub }: { eyebrow: string; title: string; sub: string }) {
-  return (
-    <header>
-      <div className="eyebrow">{eyebrow}</div>
-      <h1 className="page-title">{title}</h1>
-      <p className="page-sub">{sub}</p>
-    </header>
-  );
-}
 
 function CaseActions({ c, onDone }: { c: FraudCase; onDone: (msg: string, ok: boolean) => void }) {
   const [busy, setBusy] = useState(false);

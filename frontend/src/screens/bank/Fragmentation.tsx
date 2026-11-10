@@ -2,6 +2,7 @@ import { Section, StatusBadge, ErrorNote } from '../../components/ui';
 import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
+import { PageHeader } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
 

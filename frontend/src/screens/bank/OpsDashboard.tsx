@@ -5,6 +5,7 @@ import { usePoll } from '../../lib/poll';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
 import type { EventView } from '../../api/contract';
+import { PageHeader } from './shared';
 
 const live = () => (import.meta.env.VITE_API_BASE ? api : mockApi);
 

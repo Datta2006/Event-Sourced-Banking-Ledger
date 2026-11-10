@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AccountSummary } from '../../api/contract';
+import { PageHeader } from './shared';
 import { api } from '../../api/client';
 import { mockApi } from '../../mock/server';
 import { useNavigate } from 'react-router-dom';
